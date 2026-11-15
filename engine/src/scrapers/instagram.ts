@@ -1,7 +1,7 @@
 import { capture } from '../browser.js';
 import { config } from '../config.js';
 import type { Item, Scraper } from '../types.js';
-import { toTag, walk } from '../util.js';
+import { sleep, toTag, walk } from '../util.js';
 
 const ORIGIN = 'https://www.instagram.com';
 
@@ -41,30 +41,87 @@ export function mentions(item: Item, keyword: string): boolean {
   return (!!tag && hay.replace(/[\s._-]/g, '').includes(tag)) || hay.includes(keyword.toLowerCase());
 }
 
+/** Instagram's numeric media id for a post shortcode (the id is the shortcode read as base 64). */
+export function shortcodeToId(code: string): string {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  let n = 0n;
+  for (const ch of code.slice(0, 11)) n = n * 64n + BigInt(alphabet.indexOf(ch));
+  return n.toString();
+}
+
+interface Tile { kind: string; code: string; thumb: string | null; alt: string }
+/** Reads the tiles of the results grid straight off the page (runs in the page). */
+export const GRID = `[...document.querySelectorAll('a[href]')].map((a) => {
+  const m = (a.getAttribute('href') || '').match(/^\\/(?:[A-Za-z0-9._]+\\/)?(p|reel|reels)\\/([A-Za-z0-9_-]{5,})/);
+  if (!m) return null;
+  const img = a.querySelector('img');
+  return { kind: m[1], code: m[2], thumb: img ? img.src : null, alt: img ? img.alt : '' };
+}).filter(Boolean)`;
+/** Asks Instagram for one post's details from inside the signed-in page, the way the site itself does. */
+export const INFO = (id: string) => `fetch('/api/v1/media/${id}/info/', { credentials: 'include', headers: { 'x-ig-app-id': '936619743392459', 'x-requested-with': 'XMLHttpRequest' } })
+  .then((r) => (r.ok ? r.json() : { __status: r.status })).catch(() => ({ __status: 0 }))`;
+
+const codeOf = (url: string) => url.split('/').filter(Boolean).pop()!;
+const hasNumbers = (it?: Item) => !!it && (it.views != null || it.likes != null);
+
 export const instagram: Scraper = async (keyword, ctx) => {
   const tag = toTag(keyword);
-  const pages = [
-    ...(tag ? [`${ORIGIN}/explore/search/keyword/?q=${encodeURIComponent(`#${tag}`)}`, `${ORIGIN}/explore/tags/${encodeURIComponent(tag)}/`] : []),
-    `${ORIGIN}/explore/search/keyword/?q=${encodeURIComponent(keyword)}`,
-  ];
-  const all = new Map<string, Item>();
-  let loaded = 0;
-  for (const url of [...new Set(pages)]) {
-    // the page also loads the home feed and suggestions in the background; only posts that use the keyword count
-    const relevant = (p: unknown) => parseMedia(p).filter((it) => mentions(it, keyword));
-    const payloads = await capture({
+  // the plain keyword search is what the Instagram app shows; the hashtag search tops it up
+  const pages = [...new Set([keyword, tag ? `#${tag}` : ''].filter(Boolean))].map((q) => `${ORIGIN}/explore/search/keyword/?q=${encodeURIComponent(q)}`);
+  const tiles = new Map<string, Tile>();     // posts shown in the results grid, in Instagram's order
+  const details = new Map<string, Item>();   // everything the page loaded, by shortcode
+
+  for (const url of pages) {
+    const before = tiles.size;
+    const { payloads, finalUrl } = await capture({
       url,
       match: (u) => u.startsWith(ORIGIN) && /\/(api\/v1|graphql)\//.test(u),
-      enough: (p) => relevant(p).length >= ctx.limit,
-      maxScrolls: 16,
+      enough: () => tiles.size >= config.poolSize,
+      maxScrolls: 18,
       embedded: true,
       loginWall: /\/accounts\/(login|signup|emailsignup)/,
       challenge: /\/challenge\/|\/accounts\/suspended/,
+      thin: () => tiles.size - before < 10,
+      debugName: `instagram-${keyword}`,
+      onPage: async (page, phase) => {
+        // only tiles of the search page count; if Instagram bounced us elsewhere, take nothing
+        if (!page.url().includes('/explore/')) return;
+        const found = (await page.evaluate(GRID).catch(() => [])) as Tile[];
+        for (const t of found) if (!tiles.has(t.code)) tiles.set(t.code, t);
+        if (phase !== 'done') return;
+        // the grid often carries no numbers: look up the posts that have none, gently
+        const missing = [...tiles.keys()].filter((c) => !hasNumbers(details.get(c))).slice(0, config.instagramEnrichTop);
+        let failures = 0;
+        for (const code of missing) {
+          const info: any = await page.evaluate(INFO(shortcodeToId(code))).catch(() => ({ __status: 0 }));
+          if (info?.__status !== undefined) {
+            if (info.__status === 429 || info.__status === 401 || ++failures >= 3) { ctx.log(`instagram detail lookups stopped (status ${info.__status})`); break; }
+          } else {
+            for (const it of parseMedia(info)) details.set(codeOf(it.url), it);
+          }
+          await sleep(900 + Math.random() * 1600);
+        }
+      },
     });
-    loaded += parseMedia(payloads).length;
-    for (const it of relevant(payloads)) if (!all.has(it.url)) all.set(it.url, it);
-    ctx.log(`instagram ${url.slice(ORIGIN.length)} posts seen=${loaded} using keyword=${all.size}`);
-    if (all.size >= ctx.limit) break;
+    for (const it of parseMedia(payloads)) {
+      const code = codeOf(it.url);
+      if (!hasNumbers(details.get(code))) details.set(code, it);
+    }
+    ctx.log(`instagram ${finalUrl.slice(ORIGIN.length)} grid=${tiles.size} loaded=${details.size}`);
+    if (tiles.size >= ctx.limit) break;
   }
-  return [...all.values()];
+
+  const out = new Map<string, Item>();
+  for (const [code, t] of tiles) {
+    const d = details.get(code);
+    out.set(code, d ?? {
+      url: `${ORIGIN}/${t.kind === 'p' ? 'p' : 'reel'}/${code}/`,
+      title: t.alt.replace(/\s+/g, ' ').trim().slice(0, 300) || 'Instagram post',
+      type: t.kind === 'p' ? 'image' : 'video',
+      thumbnail: t.thumb ?? undefined,
+    });
+  }
+  // posts the page loaded outside the grid count only when they really use the keyword
+  for (const [code, d] of details) if (!out.has(code) && mentions(d, keyword)) out.set(code, d);
+  return [...out.values()];
 };

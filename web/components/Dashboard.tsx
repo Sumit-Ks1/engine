@@ -35,7 +35,7 @@ export function AccountNotices({ accounts, only, onChange }: { accounts?: Accoun
 
 export function dotClass(s?: PlatformState) {
   if (!s) return '';
-  if (s.status === 'done' && !s.count) return 'empty';
+  if (s.status === 'done' && !s.count) return 'none';
   return s.status;
 }
 export function stateLabel(s?: PlatformState) {

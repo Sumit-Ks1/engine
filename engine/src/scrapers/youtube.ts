@@ -114,7 +114,7 @@ async function viaHttp(keyword: string, session: Session, want: number, log: (m:
 async function viaBrowser(keyword: string, want: number): Promise<Item[]> {
   const seen = new Map<string, Item>();
   for (const sp of [searchParams(4), searchParams()]) {
-    const payloads = await capture({
+    const { payloads } = await capture({
       url: `${ORIGIN}/results?${new URLSearchParams({ search_query: keyword, sp, hl: 'en', gl: config.region })}`,
       match: (u) => u.includes('/youtubei/v1/search'),
       enough: (p) => parseSearch(p).items.length >= want,

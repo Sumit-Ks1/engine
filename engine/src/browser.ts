@@ -1,5 +1,5 @@
-import { mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { chromium, type BrowserContext, type Page } from 'playwright-core';
 import { config } from './config.js';
 import { ScrapeError } from './types.js';
@@ -12,13 +12,18 @@ import { sleep } from './util.js';
  */
 let ctx: Promise<BrowserContext> | null = null;
 
-export function launchOptions(headless: boolean) {
+export function launchOptions(headless: boolean, onScreen = config.browser.visible) {
+  // a normal window parked off-screen: looks like an ordinary browser to the sites, stays out of the way
+  const windowArgs = headless ? [] : [
+    ...(onScreen ? [] : ['--window-position=-2400,-2400']), '--window-size=1366,900',
+    '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling',
+  ];
   return {
     headless,
     ...(config.browser.path ? { executablePath: config.browser.path } : { channel: config.browser.channel }),
     viewport: { width: 1366, height: 850 },
     locale: `${config.lang}-${config.region}`,
-    args: ['--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check',
+    args: ['--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check', ...windowArgs,
       ...(process.platform === 'linux' ? ['--no-sandbox'] : [])],
   };
 }
@@ -59,6 +64,19 @@ export function looseJson(body: string): unknown {
   try { return JSON.parse(body.slice(start)); } catch { return undefined; }
 }
 
+/** Saves what the browser was showing, so a thin result can be diagnosed from one file. */
+export async function saveDebug(page: Page, name: string, info: Record<string, unknown>): Promise<string | null> {
+  if (config.dbPath === ':memory:') return null;
+  try {
+    const dir = join(dirname(resolve(config.dbPath)), 'debug');
+    mkdirSync(dir, { recursive: true });
+    const base = join(dir, name.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60));
+    await page.screenshot({ path: `${base}.png`, timeout: 10_000 }).catch(() => undefined);
+    writeFileSync(`${base}.json`, JSON.stringify({ at: new Date().toISOString(), url: page.url(), title: await page.title().catch(() => ''), ...info }, null, 2));
+    return `${base}.png`;
+  } catch { return null; }
+}
+
 const rand = (min: number, max: number) => min + Math.random() * (max - min);
 
 export interface CaptureOptions {
@@ -76,21 +94,30 @@ export interface CaptureOptions {
   embedded?: boolean;
   /** Extra data read from the page (runs in the page). */
   evaluate?: string;
+  /** Called with the live page after it loads, after every scroll, and once at the end. */
+  onPage?: (page: Page, phase: 'loaded' | 'scrolled' | 'done') => Promise<void>;
+  /** When this returns true at the end, a screenshot and summary are saved under data/debug. */
+  thin?: (payloads: unknown[]) => boolean;
+  debugName?: string;
 }
+
+export interface Captured { payloads: unknown[]; finalUrl: string; responses: string[] }
 
 /**
  * Opens a page like a person would, scrolls it, and returns every JSON payload the site's
  * own code loaded. Parsers then read the payloads, so nothing depends on endpoint details.
  */
-export async function capture(opts: CaptureOptions): Promise<unknown[]> {
+export async function capture(opts: CaptureOptions): Promise<Captured> {
   const c = await context();
   const page: Page = await c.newPage();
   const payloads: unknown[] = [];
+  const responses: string[] = [];
   const pending = new Set<Promise<void>>();
   let limited = false;
   page.on('response', (res) => {
     const url = res.url();
     if (!opts.match(url)) return;
+    if (responses.length < 200) responses.push(`${res.status()} ${url.slice(0, 160)}`);
     if (res.status() === 429) { limited = true; return; }
     // some sites label JSON as text/javascript and prefix it with a guard, so go by content, not by label
     const p = res.text().then((t) => { const j = looseJson(t); if (j !== undefined) payloads.push(j); }, () => undefined).finally(() => pending.delete(p));
@@ -115,6 +142,7 @@ export async function capture(opts: CaptureOptions): Promise<unknown[]> {
       const extra = await page.evaluate(opts.evaluate).catch(() => null);
       if (extra) payloads.push(extra);
     }
+    await opts.onPage?.(page, 'loaded');
     let idle = 0;
     for (let i = 0; i < opts.maxScrolls && !opts.enough(payloads) && !limited; i++) {
       const before = payloads.length;
@@ -123,12 +151,15 @@ export async function capture(opts: CaptureOptions): Promise<unknown[]> {
       await sleep(rand(1600, 3400));
       await Promise.all(pending);
       check();
+      await opts.onPage?.(page, 'scrolled');
       idle = payloads.length === before ? idle + 1 : 0;
       if (idle >= 3) break;
     }
     await Promise.all(pending);
     if (limited && !payloads.length) throw new ScrapeError('blocked', 'The platform is rate-limiting this account.');
-    return payloads;
+    await opts.onPage?.(page, 'done');
+    if (opts.debugName && opts.thin?.(payloads)) await saveDebug(page, opts.debugName, { payloads: payloads.length, responses });
+    return { payloads, finalUrl: page.url(), responses };
   } finally {
     await page.close().catch(() => undefined);
   }
@@ -138,7 +169,7 @@ export async function capture(opts: CaptureOptions): Promise<unknown[]> {
  * Opens a JSON address as a normal page visit in the signed-in browser, exactly as if it
  * had been typed into the address bar, and returns what the site answered.
  */
-export async function visitJson(url: string, loginWall?: RegExp): Promise<{ status: number; json: any; snippet: string }> {
+export async function visitJson(url: string, loginWall?: RegExp, debugName?: string): Promise<{ status: number; json: any; snippet: string }> {
   const c = await context();
   const page = await c.newPage();
   try {
@@ -147,7 +178,9 @@ export async function visitJson(url: string, loginWall?: RegExp): Promise<{ stat
     });
     if (loginWall?.test(page.url())) throw new ScrapeError('login_required', 'Not signed in.');
     const body = (await res?.text().catch(() => '')) || (await page.evaluate(() => document.body?.innerText ?? '').catch(() => ''));
-    return { status: res?.status() ?? 0, json: looseJson(body) ?? null, snippet: body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160) };
+    const json = looseJson(body) ?? null;
+    if (!json && debugName) await saveDebug(page, debugName, { status: res?.status() ?? 0 });
+    return { status: res?.status() ?? 0, json, snippet: body.replace(/<(style|script)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160) };
   } finally {
     await page.close().catch(() => undefined);
   }

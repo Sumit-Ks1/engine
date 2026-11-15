@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseNewsRss, parseRelated } from '../src/scrapers/google.js';
-import { mentions, parseMedia } from '../src/scrapers/instagram.js';
+import { mentions, parseMedia, shortcodeToId } from '../src/scrapers/instagram.js';
 import { looseJson } from '../src/browser.js';
 import { parsePins } from '../src/scrapers/pinterest.js';
 import { parseListing } from '../src/scrapers/reddit.js';
@@ -102,6 +102,9 @@ test('instagram keeps only posts that use the keyword', () => {
   assert.ok(mentions(post('my #HomeDecor ideas'), 'home decor'));
   assert.ok(mentions(post('simple home decor tips'), 'Home Decor'));
   assert.ok(!mentions(post('Big developments for Karnataka', '@narendramodi'), 'wakefit'));
+  assert.equal(shortcodeToId('B'), '1');
+  assert.equal(shortcodeToId('BA'), '64');
+  assert.match(shortcodeToId('DCabcdEFGhi'), /^\d{15,20}$/);
   assert.deepEqual(looseJson('for (;;);{"a":1}'), { a: 1 });
   assert.equal(looseJson('<html>nope</html>'), undefined);
 });

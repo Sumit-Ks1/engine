@@ -34,14 +34,14 @@ const LOGIN_HELP = 'Stop the engine, run "npm run login", sign in on the Reddit 
 async function search(q: URLSearchParams) {
   let last = { status: 0, json: null as any, snippet: '' };
   for (const host of ['www.reddit.com', 'old.reddit.com']) {
-    last = await visitJson(`https://${host}/search.json?${q}`, /\/login/);
+    last = await visitJson(`https://${host}/search.json?${q}`, /\/login/, `reddit-${host}`);
     if (last.json?.data?.children) return last.json;
     if (last.status === 429) break;
   }
   if (last.status === 429) throw new ScrapeError('blocked', 'Reddit is rate-limiting this account.');
   if (!(await hasCookie('https://www.reddit.com', 'reddit_session'))) throw new ScrapeError('login_required', `No Reddit sign-in is saved. ${LOGIN_HELP}`);
   // signed in, yet refused: say exactly what Reddit answered instead of guessing
-  throw new ScrapeError('parse', `Reddit answered status ${last.status}: ${last.snippet || 'empty page'}`);
+  throw new ScrapeError('parse', `Reddit answered status ${last.status}: ${last.snippet || 'empty page'} (screenshot saved in engine/data/debug)`);
 }
 
 export const reddit: Scraper = async (keyword, ctx) => {

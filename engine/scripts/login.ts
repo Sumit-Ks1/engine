@@ -9,7 +9,7 @@ import { launchOptions, profileDir } from '../src/browser.js';
 const SITES = ['https://www.instagram.com/accounts/login/', 'https://x.com/i/flow/login', 'https://www.reddit.com/login/'];
 
 try {
-  const ctx = await chromium.launchPersistentContext(profileDir(), launchOptions(false));
+  const ctx = await chromium.launchPersistentContext(profileDir(), launchOptions(false, true));
   const pages = ctx.pages();
   for (const [i, url] of SITES.entries()) {
     const page = pages[i] ?? (await ctx.newPage());
