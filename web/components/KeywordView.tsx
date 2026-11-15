@@ -20,7 +20,7 @@ function ago(ts?: number | string | null) {
   return new Date(ts).toLocaleDateString('en-IN', { year: 'numeric', month: 'short' });
 }
 
-export default function KeywordView({ id, initialPlatform }: { id: string; initialPlatform?: string }) {
+export default function KeywordView({ id, initialPlatform, companyId }: { id: string; initialPlatform?: string; companyId?: string }) {
   const [platform, setPlatform] = useState<PlatformId>(PLATFORMS.find((p) => p.id === initialPlatform)?.id ?? 'youtube');
   const [data, setData] = useState<Detail | null>(null);
   const [error, setError] = useState('');
@@ -45,7 +45,7 @@ export default function KeywordView({ id, initialPlatform }: { id: string; initi
 
   function pick(p: PlatformId) {
     setPlatform(p);
-    window.history.replaceState(null, '', `/k/${id}?p=${p}`);
+    window.history.replaceState(null, '', `/k/${id}?${companyId ? `c=${companyId}&` : ''}p=${p}`);
   }
   async function refresh() {
     setBusy(true);
@@ -74,7 +74,7 @@ export default function KeywordView({ id, initialPlatform }: { id: string; initi
   return (
     <div className="wrap">
       <header className="top">
-        <Link className="btn small" href="/">← All keywords</Link>
+        <Link className="btn small" href={companyId ? `/c/${companyId}` : '/'}>← {companyId ? 'Keywords' : 'All companies'}</Link>
         <div className="brand">Trend Engine</div>
       </header>
       {error ? <div className="panel empty"><h3>{error}</h3></div> : (

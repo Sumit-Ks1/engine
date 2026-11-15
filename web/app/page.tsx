@@ -1,2 +1,2 @@
-import Dashboard from '@/components/Dashboard';
-export default function Page() { return <Dashboard />; }
+import Companies from '@/components/Companies';
+export default function Page() { return <Companies />; }

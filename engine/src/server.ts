@@ -38,14 +38,35 @@ app.get('/health', async () => ({ ok: true }));
 
 app.get('/stats', async () => ({ ...store.stats(), egress: routes.stats(), accounts: lanes.laneStatus(), refreshHours: config.refreshHours, demo: config.demoMode }));
 
-app.get('/keywords', async (req) => {
+app.get('/companies', async () => ({ companies: store.listCompanies() }));
+
+app.post('/companies', async (req, reply) => {
+  const name = String((req.body as { name?: unknown })?.name ?? '').normalize('NFKC').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!name || name.length > 60) return reply.code(400).send({ error: 'Enter a company name of up to 60 characters.' });
+  const company = store.addCompany(name);
+  if (!company) return reply.code(409).send({ error: 'That company is already in the list.' });
+  return { company };
+});
+
+app.delete('/companies/:id', async (req, reply) => {
+  const id = idOf((req.params as any).id);
+  if (!id || !store.deleteCompany(id)) return reply.code(404).send({ error: 'not found' });
+  return { ok: true };
+});
+
+app.get('/companies/:id/keywords', async (req, reply) => {
+  const id = idOf((req.params as any).id);
+  const company = id && store.getCompany(id);
+  if (!company) return reply.code(404).send({ error: 'not found' });
   const q = req.query as Record<string, string>;
   const limit = Math.min(200, Math.max(1, Number(q.limit) || 50));
   const page = Math.max(1, Number(q.page) || 1);
-  return { page, limit, ...store.listKeywords(String(q.search ?? '').slice(0, 100), limit, (page - 1) * limit) };
+  return { company, page, limit, ...store.listKeywords(company.id, String(q.search ?? '').slice(0, 100), limit, (page - 1) * limit) };
 });
 
-app.post('/keywords', async (req, reply) => {
+app.post('/companies/:id/keywords', async (req, reply) => {
+  const id = idOf((req.params as any).id);
+  if (!id || !store.getCompany(id)) return reply.code(404).send({ error: 'not found' });
   const terms = (req.body as { terms?: unknown })?.terms;
   if (!Array.isArray(terms) || terms.length > 5000) return reply.code(400).send({ error: 'terms must be an array of at most 5000 keywords' });
   const clean = new Map<string, string>();
@@ -54,16 +75,15 @@ app.post('/keywords', async (req, reply) => {
     const k = normalizeKeyword(t);
     if (k) clean.set(k.toLowerCase(), k); else invalid++;
   }
-  const result = store.addKeywords([...clean.values()]);
+  const result = store.addKeywords(id, [...clean.values()]);
   queue.kick();
   return { ...result, duplicates: result.duplicates + (terms.length - invalid - clean.size), invalid };
 });
 
-app.delete('/keywords', async () => ({ deleted: store.deleteAllKeywords() }));
-
-app.delete('/keywords/:id', async (req, reply) => {
+app.delete('/companies/:id/keywords/:kid', async (req, reply) => {
   const id = idOf((req.params as any).id);
-  if (!id || !store.deleteKeyword(id)) return reply.code(404).send({ error: 'not found' });
+  const kid = idOf((req.params as any).kid);
+  if (!id || !kid || !store.removeKeyword(id, kid)) return reply.code(404).send({ error: 'not found' });
   return { ok: true };
 });
 

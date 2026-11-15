@@ -24,7 +24,9 @@ cd web && cp .env.example .env.local && npm install && npm run dev
 ```
 
 Fill in both env files first (`openssl rand -hex 32` for the key and the session secret).
-Open http://localhost:3000, sign in, add keywords or upload an `.xlsx` / `.csv`.
+Open http://localhost:3000, sign in, pick a company, then add keywords or upload an `.xlsx` / `.csv`.
+Companies are only folders for keywords; the company name itself is never searched. A keyword
+listed under two companies is collected once and shown under both.
 
 Production: `npm run build && npm start` in each folder. Keep the engine on a private address.
 

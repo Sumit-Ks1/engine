@@ -40,6 +40,20 @@ db.exec(`
     PRIMARY KEY (keyword_id, platform, rank)
   );
   CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS companies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL
+  );
+  -- A company is only a folder. A keyword is collected once even if several companies list it.
+  CREATE TABLE IF NOT EXISTS company_keywords (
+    company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    keyword_id INTEGER NOT NULL REFERENCES keywords(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (company_id, keyword_id)
+  );
+  CREATE INDEX IF NOT EXISTS company_keywords_kw ON company_keywords(keyword_id);
 `);
 // jobs interrupted by a restart go back in the queue
 db.prepare(`UPDATE jobs SET status = 'queued' WHERE status = 'running'`).run();
@@ -60,27 +74,86 @@ const tx = <T>(fn: () => T): T => {
   try { const r = fn(); db.exec('COMMIT'); return r; } catch (e) { db.exec('ROLLBACK'); throw e; }
 };
 
+const DEFAULT_COMPANIES = ['Flo Mattress', 'The Sleep Company', 'Sleepyhead', 'WakeFit', 'Duroflex', 'Sleepycat', 'Sunday', 'Peps', 'Springfit', 'Century Mattress', 'Sleepwell', 'Kurlon'];
+const insCompany = db.prepare(`INSERT INTO companies (name, name_key, created_at) VALUES (?, ?, ?) ON CONFLICT(name_key) DO NOTHING`);
 const insKeyword = db.prepare(`INSERT INTO keywords (term, term_key, created_at) VALUES (?, ?, ?) ON CONFLICT(term_key) DO NOTHING`);
 const insJob = db.prepare(`INSERT INTO jobs (keyword_id, platform, queued_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`);
+const insLink = db.prepare(`INSERT INTO company_keywords (company_id, keyword_id, position) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`);
 
-export function addKeywords(terms: string[]): { added: number; duplicates: number } {
+// first run: create the starting company list; keywords from before companies existed go under "General"
+if (!db.prepare(`SELECT v FROM kv WHERE k = 'companies_seeded'`).get()) {
+  tx(() => {
+    const now = Date.now();
+    for (const name of DEFAULT_COMPANIES) insCompany.run(name, name.toLowerCase(), now);
+    const orphans = db.prepare(`SELECT id FROM keywords WHERE id NOT IN (SELECT keyword_id FROM company_keywords) ORDER BY id`).all() as { id: number }[];
+    if (orphans.length) {
+      insCompany.run('General', 'general', now);
+      const general = (db.prepare(`SELECT id FROM companies WHERE name_key = 'general'`).get() as { id: number }).id;
+      orphans.forEach((o, i) => insLink.run(general, o.id, i));
+    }
+    db.prepare(`INSERT INTO kv (k, v) VALUES ('companies_seeded', '1')`).run();
+  });
+}
+
+export interface Company { id: number; name: string; created_at: number }
+
+export function listCompanies() {
+  return db.prepare(`
+    SELECT c.id, c.name, c.created_at,
+      (SELECT COUNT(*) FROM company_keywords ck WHERE ck.company_id = c.id) AS keywords,
+      (SELECT COUNT(*) FROM jobs j JOIN company_keywords ck ON ck.keyword_id = j.keyword_id WHERE ck.company_id = c.id) AS jobs,
+      (SELECT COUNT(*) FROM jobs j JOIN company_keywords ck ON ck.keyword_id = j.keyword_id WHERE ck.company_id = c.id AND j.status IN ('done', 'failed')) AS finished,
+      (SELECT COUNT(*) FROM jobs j JOIN company_keywords ck ON ck.keyword_id = j.keyword_id WHERE ck.company_id = c.id AND j.status = 'failed') AS failed
+    FROM companies c ORDER BY c.id`).all() as unknown as (Company & { keywords: number; jobs: number; finished: number; failed: number })[];
+}
+
+export const getCompany = (id: number) => db.prepare(`SELECT id, name, created_at FROM companies WHERE id = ?`).get(id) as unknown as Company | undefined;
+
+export function addCompany(name: string): Company | null {
+  const r = insCompany.run(name, name.toLowerCase(), Date.now());
+  return r.changes ? getCompany(Number(r.lastInsertRowid))! : null;
+}
+
+const dropOrphanKeywords = () => db.prepare(`DELETE FROM keywords WHERE id NOT IN (SELECT keyword_id FROM company_keywords)`).run();
+
+export function deleteCompany(id: number) {
+  return tx(() => {
+    const ok = db.prepare(`DELETE FROM companies WHERE id = ?`).run(id).changes > 0;
+    if (ok) dropOrphanKeywords();
+    return ok;
+  });
+}
+
+/** Adds keywords to a company. A keyword another company already has is linked, not collected twice. */
+export function addKeywords(companyId: number, terms: string[]): { added: number; duplicates: number } {
   return tx(() => {
     let added = 0;
     const now = Date.now();
+    let position = (db.prepare(`SELECT COALESCE(MAX(position), -1) AS p FROM company_keywords WHERE company_id = ?`).get(companyId) as { p: number }).p;
+    const find = db.prepare(`SELECT id FROM keywords WHERE term_key = ?`);
     for (const term of terms) {
       const r = insKeyword.run(term, term.toLowerCase(), now);
-      if (!r.changes) continue;
-      added++;
-      for (const p of PLATFORMS) insJob.run(Number(r.lastInsertRowid), p, now);
+      const keywordId = r.changes ? Number(r.lastInsertRowid) : (find.get(term.toLowerCase()) as { id: number }).id;
+      if (r.changes) for (const p of PLATFORMS) insJob.run(keywordId, p, now);
+      if (insLink.run(companyId, keywordId, ++position).changes) added++;
     }
     return { added, duplicates: terms.length - added };
   });
 }
 
-export function listKeywords(search: string, limit: number, offset: number) {
+export function removeKeyword(companyId: number, keywordId: number) {
+  return tx(() => {
+    const ok = db.prepare(`DELETE FROM company_keywords WHERE company_id = ? AND keyword_id = ?`).run(companyId, keywordId).changes > 0;
+    if (ok) dropOrphanKeywords();
+    return ok;
+  });
+}
+
+export function listKeywords(companyId: number, search: string, limit: number, offset: number) {
   const like = `%${search.toLowerCase().replace(/[\\%_]/g, '\\$&')}%`;
-  const total = (db.prepare(`SELECT COUNT(*) AS n FROM keywords WHERE term_key LIKE ? ESCAPE '\\'`).get(like) as { n: number }).n;
-  const rows = db.prepare(`SELECT id, term, created_at FROM keywords WHERE term_key LIKE ? ESCAPE '\\' ORDER BY term_key LIMIT ? OFFSET ?`).all(like, limit, offset) as unknown as Keyword[];
+  const where = `FROM keywords k JOIN company_keywords ck ON ck.keyword_id = k.id WHERE ck.company_id = ? AND k.term_key LIKE ? ESCAPE '\\'`;
+  const total = (db.prepare(`SELECT COUNT(*) AS n ${where}`).get(companyId, like) as { n: number }).n;
+  const rows = db.prepare(`SELECT k.id, k.term, k.created_at ${where} ORDER BY ck.position, k.id LIMIT ? OFFSET ?`).all(companyId, like, limit, offset) as unknown as Keyword[];
   const jobsFor = db.prepare(`SELECT platform, status, result_count, fetched_at, error_kind FROM jobs WHERE keyword_id = ?`);
   return {
     total,
@@ -92,8 +165,6 @@ export function listKeywords(search: string, limit: number, offset: number) {
 }
 
 export const getKeyword = (id: number) => db.prepare(`SELECT id, term, created_at FROM keywords WHERE id = ?`).get(id) as unknown as Keyword | undefined;
-export const deleteKeyword = (id: number) => db.prepare(`DELETE FROM keywords WHERE id = ?`).run(id).changes > 0;
-export const deleteAllKeywords = () => Number(db.prepare(`DELETE FROM keywords`).run().changes);
 export const getJobs = (keywordId: number) => db.prepare(`SELECT * FROM jobs WHERE keyword_id = ?`).all(keywordId) as unknown as Job[];
 
 export function getResults(keywordId: number, platform: Platform): Item[] {
@@ -163,5 +234,6 @@ export function failJob(job: Job, error: string, kind: string, retryAt: number |
 export function stats() {
   const byStatus = Object.fromEntries((db.prepare(`SELECT status, COUNT(*) AS n FROM jobs GROUP BY status`).all() as any[]).map((r) => [r.status, r.n]));
   const keywords = (db.prepare(`SELECT COUNT(*) AS n FROM keywords`).get() as { n: number }).n;
-  return { keywords, jobs: { queued: 0, running: 0, done: 0, failed: 0, ...byStatus } };
+  const companies = (db.prepare(`SELECT COUNT(*) AS n FROM companies`).get() as { n: number }).n;
+  return { companies, keywords, jobs: { queued: 0, running: 0, done: 0, failed: 0, ...byStatus } };
 }

@@ -1,6 +1,7 @@
 import ExcelJS from 'exceljs';
 import { NextResponse, type NextRequest } from 'next/server';
 import { engine } from '@/lib/engine';
+import { safeId } from '@/lib/ids';
 
 export const runtime = 'nodejs';
 const MAX_BYTES = 5 * 1024 * 1024;
@@ -17,7 +18,7 @@ const cellText = (v: ExcelJS.CellValue): string => {
   return String(v);
 };
 
-export async function POST(req: NextRequest) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const form = await req.formData().catch(() => null);
   const file = form?.get('file');
   if (!(file instanceof File)) return NextResponse.json({ error: 'No file received.' }, { status: 400 });
@@ -42,5 +43,5 @@ export async function POST(req: NextRequest) {
   const clean = terms.map((t) => t.trim()).filter((t) => t && !HEADER.test(t) && !/^\d+$/.test(t));
   if (!clean.length) return NextResponse.json({ error: 'No keywords found in that file.' }, { status: 400 });
   if (clean.length > 5000) return NextResponse.json({ error: 'A file can hold at most 5000 keywords.' }, { status: 400 });
-  return engine('/keywords', { method: 'POST', body: { terms: clean } });
+  return engine(`/companies/${safeId((await params).id)}/keywords`, { method: 'POST', body: { terms: clean } });
 }
