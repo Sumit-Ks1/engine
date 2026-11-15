@@ -2,7 +2,9 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import Fastify from 'fastify';
 import { config, PLATFORMS, type Platform } from './config.js';
 import * as store from './db.js';
+import { closeBrowser } from './browser.js';
 import { routes } from './http/proxy.js';
+import * as lanes from './lanes.js';
 import { startQueue } from './queue.js';
 import { normalizeKeyword } from './util.js';
 
@@ -11,7 +13,9 @@ if (!config.apiKey || config.apiKey.length < 24) {
   process.exit(1);
 }
 
-const app = Fastify({ logger: { level: 'info' }, bodyLimit: 1024 * 1024 });
+const app = Fastify({ logger: { level: 'info' }, disableRequestLogging: true, bodyLimit: 1024 * 1024 });
+// jobs that failed while a platform was signed out or resting get another go after a restart
+for (const p of lanes.ACCOUNT_PLATFORMS) if (!lanes.pauseOf(p)) store.requeueFailed(p);
 const queue = startQueue((msg) => app.log.info(msg));
 
 const digest = (s: string) => createHash('sha256').update(s).digest();
@@ -32,7 +36,7 @@ const platformOf = (v: unknown): Platform | null => (PLATFORMS as readonly strin
 
 app.get('/health', async () => ({ ok: true }));
 
-app.get('/stats', async () => ({ ...store.stats(), egress: routes.stats(), refreshHours: config.refreshHours, demo: config.demoMode }));
+app.get('/stats', async () => ({ ...store.stats(), egress: routes.stats(), accounts: lanes.laneStatus(), refreshHours: config.refreshHours, demo: config.demoMode }));
 
 app.get('/keywords', async (req) => {
   const q = req.query as Record<string, string>;
@@ -89,10 +93,20 @@ app.post('/keywords/:id/refresh', async (req, reply) => {
   return { queued };
 });
 
+app.post('/accounts/:platform/resume', async (req, reply) => {
+  const platform = platformOf((req.params as any).platform);
+  if (!platform || !lanes.ACCOUNT_PLATFORMS.includes(platform)) return reply.code(400).send({ error: 'unknown platform' });
+  lanes.resume(platform);
+  const queued = store.requeueFailed(platform);
+  queue.kick();
+  return { queued };
+});
+
 const shutdown = async () => {
   app.log.info('shutting down');
   await app.close();
   await queue.stop();
+  await closeBrowser();
   store.db.close();
   process.exit(0);
 };

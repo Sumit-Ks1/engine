@@ -28,16 +28,40 @@ Open http://localhost:3000, sign in, add keywords or upload an `.xlsx` / `.csv`.
 
 Production: `npm run build && npm start` in each folder. Keep the engine on a private address.
 
+## Sign in to Instagram, X and Reddit (once)
+
+These three only show search results to signed-in visitors. With the engine stopped:
+
+```bash
+cd engine && npm run login
+```
+
+A Chrome window opens with three tabs. Sign in on each, then close the window. The sign-ins
+are saved in `engine/data/browser-profile` on this PC and reused by the engine. Use accounts
+made for this purpose, not personal ones, and run the engine on the same network you signed in from.
+
 ## How it works
 
-- Adding a keyword queues one job per platform. Workers collect up to `RESULT_LIMIT` (100)
-  items, rank them by traction (views + weighted likes / comments / shares) and cache them.
-- Everything is re-collected every `REFRESH_HOURS`. "Refresh now" jumps the queue.
-- A failed or empty run never overwrites results already cached.
-- Requests rotate across egress routes; a route that gets turned away cools down with
-  exponential back-off while traffic moves to the others. Requests to one host are spaced out.
+- Adding a keyword queues one job per platform. Each job gathers a pool of up to `POOL_SIZE`
+  (300) candidates, ranks them by traction (views + weighted likes / comments / shares) and
+  keeps the top `RESULT_LIMIT` (100).
+- A failed or empty run never overwrites results already cached. "Refresh now" jumps the queue.
+- Failures are listed in the dashboard and in `engine/data/errors.log`.
 
-## Rotating IPs on AWS
+Two lanes:
+
+- **Signed-in lane (Instagram, X, Reddit)**: a real Chrome with the saved profile opens the
+  platform's own search page, scrolls it, and reads the data the page loads. It always uses
+  this machine's own connection (never a rotating IP), handles one keyword at a time with a
+  randomised gap, has a daily cap, and pauses itself the moment a platform rate-limits or
+  challenges the account. The dashboard shows the pause and how to clear it.
+- **Anonymous lane (YouTube, Pinterest, Google)**: plain requests, which can go through the
+  rotating egress below. YouTube falls back to the browser if requests are turned away.
+
+At the default pace Instagram handles roughly one keyword a minute, so 600 keywords take
+about 10 hours; that is why it refreshes every 48 hours.
+
+## Rotating IPs on AWS (anonymous lane only)
 
 ```bash
 cd engine && npm run gateways -- create
@@ -45,31 +69,28 @@ cd engine && npm run gateways -- create
 
 Creates an API Gateway per target host in each region of `AWS_GATEWAY_REGIONS` and writes
 `gateways.json`; set `AWS_GATEWAYS_FILE=./gateways.json`. Each request then leaves from a
-different AWS address. `npm run gateways -- delete` removes them. AWS charges per request
-and per GB. `PROXY_URLS` can be used instead of, or together with, the gateways.
+different AWS address. `npm run gateways -- delete` removes them. `PROXY_URLS` works too.
+Signed-in platforms deliberately ignore this: an account that hops between addresses looks stolen.
 
 ## What each platform returns
 
-| Platform  | Source                                              | Numbers                                         |
-|-----------|-----------------------------------------------------|-------------------------------------------------|
-| YouTube   | Search sorted by views (month → year → all time)    | Views; likes/comments for top `YOUTUBE_ENRICH_TOP` |
-| Reddit    | Top posts (week → month → year)                     | Upvotes, comments, crossposts                   |
-| Pinterest | Pin search                                          | Reactions, comments, saves; promoted pins tagged |
-| Google    | Google News results for the keyword                 | None exist on Google; ordered by Google's rank  |
-| Instagram | Hashtag payload if served, else public post links   | Likes, comments, plays where the embed shows them |
-| X         | Public post links + X's public embed data           | Likes, replies                                  |
+| Platform  | Source                                                  | Numbers                                    |
+|-----------|---------------------------------------------------------|--------------------------------------------|
+| YouTube   | Search sorted by view count (month, year, all time)     | Views; likes/comments for the top `YOUTUBE_ENRICH_TOP` |
+| Instagram | Signed-in search for `#tag` and the keyword             | Plays, likes, comments                     |
+| X         | Signed-in "Top" search                                  | Views, likes, replies, reposts; ads tagged |
+| Reddit    | Signed-in search, top of week / month / year            | Upvotes, comments, crossposts              |
+| Pinterest | Pin search, deep pool then ranked                       | Reactions, comments, saves; ads tagged     |
+| Google    | Google Trends rising + top related searches, then news stories | Growth %, interest score, outlets covering |
 
 Known limits:
 
-- **Instagram and X** show hashtag/search results only to signed-in visitors. Without accounts,
-  the engine finds public post links through web search and reads each post's public embed, so
-  these two return fewer than 100 items and not strictly the top ones.
-- **AWS addresses are datacenter IPs.** Instagram, Pinterest and Google turn many of them away.
-  Add residential proxies via `PROXY_URLS` if those platforms show "turned away" in the dashboard.
-- **Ads**: promoted items are tagged where a platform includes them in results (Pinterest, Reddit).
-  There is no dedicated ad-library collector.
-- Collectors read the sites' own pages, which change without notice. `npm test` in `engine/`
-  covers the parsers; when a platform changes its markup the matching file in
-  `engine/src/scrapers/` is the only place to update.
+- Only YouTube can sort its whole catalogue by views. Elsewhere the list is the best of
+  everything the platform shows for the keyword, not a guaranteed global top.
+- Automated use of an account breaks these platforms' terms. The pacing lowers the risk; it
+  cannot remove it.
+- Google has no likes or views; Google Trends often rate-limits, in which case the tab shows stories only.
+- Collectors read what the sites' own pages load, which changes without notice. `npm test`
+  in `engine/` covers the parsers; each platform has one file in `engine/src/scrapers/`.
 
 `DEMO_MODE=1` on the engine serves clearly labelled sample data for UI work. Never set it in production.

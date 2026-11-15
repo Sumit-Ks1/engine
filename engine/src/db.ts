@@ -39,9 +39,13 @@ db.exec(`
     data TEXT NOT NULL,
     PRIMARY KEY (keyword_id, platform, rank)
   );
+  CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 `);
 // jobs interrupted by a restart go back in the queue
 db.prepare(`UPDATE jobs SET status = 'queued' WHERE status = 'running'`).run();
+
+export const kvGet = (k: string) => (db.prepare(`SELECT v FROM kv WHERE k = ?`).get(k) as { v: string } | undefined)?.v || undefined;
+export const kvSet = (k: string, v: string) => { db.prepare(`INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`).run(k, v); };
 
 export interface Job {
   keyword_id: number; platform: Platform; status: 'queued' | 'running' | 'done' | 'failed';
@@ -107,11 +111,16 @@ export function requeue(keywordId: number, platform?: Platform) {
 }
 
 /** Re-queues everything whose last run is older than the refresh interval. */
-export function requeueStale(olderThan: number) {
+export function requeueStale(platform: Platform, olderThan: number) {
   return Number(db.prepare(
     `UPDATE jobs SET status = 'queued', priority = 0, attempts = 0, run_after = 0, queued_at = ?
-     WHERE status IN ('done', 'failed') AND finished_at < ?`,
-  ).run(Date.now(), olderThan).changes);
+     WHERE platform = ? AND status IN ('done', 'failed') AND finished_at < ?`,
+  ).run(Date.now(), platform, olderThan).changes);
+}
+
+/** Failed jobs of one platform go back in the queue (used when a paused platform resumes). */
+export function requeueFailed(platform: Platform) {
+  return Number(db.prepare(`UPDATE jobs SET status = 'queued', attempts = 0, run_after = 0, queued_at = ? WHERE platform = ? AND status = 'failed'`).run(Date.now(), platform).changes);
 }
 
 export function claimNext(busyPlatforms: Platform[]): Job | undefined {

@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseNewsRss } from '../src/scrapers/google.js';
-import { unwrapLinks } from '../src/scrapers/discovery.js';
-import { parseEmbed, parseTagInfo } from '../src/scrapers/instagram.js';
+import { parseNewsRss, parseRelated } from '../src/scrapers/google.js';
+import { parseMedia } from '../src/scrapers/instagram.js';
 import { parsePins } from '../src/scrapers/pinterest.js';
 import { parseListing } from '../src/scrapers/reddit.js';
-import { embedToken, parseTweet } from '../src/scrapers/twitter.js';
+import { parseTimeline } from '../src/scrapers/twitter.js';
 import { parseSearch, parseWatch, searchParams } from '../src/scrapers/youtube.js';
 import { rank } from '../src/scrapers/index.js';
 import { extractJsonAfter, normalizeKeyword, parseCount, relativeToIso, toTag } from '../src/util.js';
@@ -31,6 +30,7 @@ test('relativeToIso / keywords', () => {
 test('extractJsonAfter handles braces inside strings', () => {
   const html = `<script>var ytInitialData = {"a":"}{\\"","b":{"c":1}};</script>`;
   assert.deepEqual(extractJsonAfter(html, 'ytInitialData'), { a: '}{"', b: { c: 1 } });
+  assert.deepEqual(extractJsonAfter(`window["ytInitialData"] = {"z":2};`, 'ytInitialData'), { z: 2 });
 });
 
 test('youtube search params + parsing', () => {
@@ -82,25 +82,38 @@ test('pinterest pins', () => {
   assert.equal(parsePins({ resource_response: { bookmark: '-end-', data: { results: [] } } }).bookmark, null);
 });
 
-test('instagram payload + embed', () => {
-  const items = parseTagInfo({ data: { top: { sections: [{ layout_content: { medias: [{ media: { code: 'Cxyz', like_count: 1000, comment_count: 20, play_count: 50000, media_type: 2, product_type: 'clips', user: { username: 'joe' }, caption: { text: 'hello #tag' }, taken_at: 1760000000 } }] } }] } } });
-  assert.deepEqual([items[0].url, items[0].views, items[0].likes, items[0].type, items[0].author], ['https://www.instagram.com/reel/Cxyz/', 50000, 1000, 'video', '@joe']);
-  const html = `<script>x({\\"shortcode_media\\":{\\"owner\\":{\\"username\\":\\"joe.k\\"},\\"video_view_count\\":7777,\\"edge_liked_by\\":{\\"count\\":345},\\"edge_media_to_comment\\":{\\"count\\":12},\\"taken_at_timestamp\\":1760000000}})</script>`;
-  const e = parseEmbed(html, 'https://www.instagram.com/p/Cxyz/');
-  assert.deepEqual([e.views, e.likes, e.comments, e.author, e.type], [7777, 345, 12, '@joe.k', 'video']);
-  assert.equal(parseEmbed('<a class="Username">amy</a> <span>1,234 likes</span>', 'https://www.instagram.com/p/C1/').likes, 1234);
+test('instagram media from any payload shape', () => {
+  const media = { code: 'Cxyz12', like_count: 1000, comment_count: 20, play_count: 50000, media_type: 2, product_type: 'clips', user: { username: 'joe' }, caption: { text: 'hello #tag' }, taken_at: 1760000000 };
+  const items = parseMedia([
+    { data: { top: { sections: [{ layout_content: { medias: [{ media }] } }] } } },
+    { data: { xdt_search: { edges: [{ node: { code: 'Cimg77', media_type: 1, like_count: 5, owner: { username: 'amy' } } }, { node: media }] } } },
+    { unrelated: { code: 'x' } },
+  ]);
+  assert.equal(items.length, 2);
+  assert.deepEqual([items[0].url, items[0].views, items[0].likes, items[0].type, items[0].author], ['https://www.instagram.com/reel/Cxyz12/', 50000, 1000, 'video', '@joe']);
+  assert.deepEqual([items[1].url, items[1].type, items[1].author], ['https://www.instagram.com/p/Cimg77/', 'image', '@amy']);
 });
 
-test('twitter embed data + link discovery', () => {
-  assert.match(embedToken('1846987139428634858'), /^[a-z0-9]+$/);
-  const it = parseTweet({ id_str: '123456789', text: 'hi\nthere', user: { screen_name: 'ann' }, favorite_count: 900, conversation_count: 30, created_at: '2026-11-01T00:00:00.000Z', mediaDetails: [{ type: 'photo', media_url_https: 'p.jpg' }] })!;
-  assert.deepEqual([it.url, it.title, it.likes, it.comments, it.type], ['https://x.com/ann/status/123456789', 'hi there', 900, 30, 'image']);
-  assert.equal(parseTweet({ __typename: 'TweetTombstone' }), null);
-  const ddg = `<a href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fx.com%2Fann%2Fstatus%2F123456789&amp;rut=1">`;
-  const bing = `<a href="https://www.bing.com/ck/a?!&&p=1&u=a1${Buffer.from('https://www.instagram.com/reel/Cabc12/').toString('base64url')}&ntb=1">`;
-  const text = unwrapLinks(ddg + bing);
-  assert.ok(text.includes('https://x.com/ann/status/123456789'));
-  assert.ok(text.includes('https://www.instagram.com/reel/Cabc12/'));
+test('x search timeline', () => {
+  const tweet = (id: string, extra: object = {}) => ({ __typename: 'Tweet', rest_id: id, views: { count: '120000' },
+    core: { user_results: { result: { legacy: { screen_name: 'ann' } } } },
+    legacy: { full_text: 'hi there https://t.co/abc', favorite_count: 900, reply_count: 30, retweet_count: 10, quote_count: 2, created_at: 'Sun Nov 01 00:00:00 +0000 2026', extended_entities: { media: [{ type: 'video', media_url_https: 'p.jpg' }] }, ...extra } });
+  const items = parseTimeline([{ data: { entries: [
+    { content: { itemContent: { tweet_results: { result: tweet('111') } } } },
+    { content: { itemContent: { tweet_results: { result: tweet('222') }, promotedMetadata: {} } } },
+    { content: { itemContent: { tweet_results: { result: tweet('333', { retweeted_status_result: { result: tweet('111') } }) } } } },
+  ] } }]);
+  assert.deepEqual(items.map((i) => [i.url, i.type]), [['https://x.com/ann/status/111', 'video'], ['https://x.com/ann/status/222', 'ad']]);
+  assert.deepEqual([items[0].title, items[0].views, items[0].likes, items[0].comments, items[0].shares], ['hi there', 120000, 900, 30, 12]);
+});
+
+test('google trends related searches: rising first', () => {
+  const items = parseRelated({ default: { rankedList: [
+    { rankedKeyword: [{ query: 'skincare routine', value: 100, formattedValue: '100', link: '/trends/explore?q=a' }] },
+    { rankedKeyword: [{ query: 'new serum', value: 5200, formattedValue: 'Breakout' }, { query: 'glass skin', value: 250, formattedValue: '+250%' }] },
+  ] } });
+  assert.deepEqual(items.map((i) => [i.title, i.extra?.signal]), [['new serum', 'Breakout (+5000%)'], ['glass skin', '+250% growth'], ['skincare routine', '100/100 interest']]);
+  assert.equal(items[0].url, 'https://www.google.com/search?q=new%20serum');
 });
 
 test('rank orders by traction and caps the list', () => {

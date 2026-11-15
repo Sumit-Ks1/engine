@@ -15,10 +15,12 @@
     "gateways": "tsx --env-file-if-exists=.env scripts/aws-gateways.ts",
     "predev": "node scripts/check-node.cjs",
     "prestart": "node scripts/check-node.cjs",
-    "pretest": "node scripts/check-node.cjs"
+    "pretest": "node scripts/check-node.cjs",
+    "login": "node scripts/check-node.cjs && tsx --env-file-if-exists=.env scripts/login.ts"
   },
   "dependencies": {
     "fastify": "^5.2.0",
+    "playwright-core": "^1.63.0",
     "undici": "^7.2.0"
   },
   "devDependencies": {

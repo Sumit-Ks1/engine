@@ -66,8 +66,8 @@ export function extractJsonAfter(html: string, marker: string): any | null {
     if (at < 0) return null;
     const start = html.indexOf('{', at + marker.length);
     if (start < 0) return null;
-    // only whitespace / "=" / ":" may sit between the marker and the object
-    if (/^[\s=:]*$/.test(html.slice(at + marker.length, start))) {
+    // only quotes / brackets / whitespace / "=" / ":" may sit between the marker and the object
+    if (/^["'\]\s=:]*$/.test(html.slice(at + marker.length, start))) {
       let depth = 0, inStr = false, esc = false;
       for (let i = start; i < html.length; i++) {
         const c = html[i];

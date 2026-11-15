@@ -1,3 +1,4 @@
+import { capture } from '../browser.js';
 import { config } from '../config.js';
 import { request, Session } from '../http/client.js';
 import { ScrapeError, type Item, type Scraper } from '../types.js';
@@ -67,43 +68,86 @@ export function parseWatch(html: string): { likes: number | null; comments: numb
   return { likes: like ? parseCount(like[1]) : null, comments: comment ? parseCount(comment[1]) : null };
 }
 
-export const youtube: Scraper = async (keyword, ctx) => {
-  const session = new Session();
-  // skips the EU consent interstitial
-  session.setCookie('youtube.com', 'SOCS', 'CAI');
-  session.setCookie('youtube.com', 'CONSENT', 'YES+1');
+async function viaHttp(keyword: string, session: Session, want: number, log: (m: string) => void): Promise<Item[]> {
   const seen = new Map<string, Item>();
   const add = (list: Item[]) => { for (const it of list) if (it.title && !seen.has(it.url)) seen.set(it.url, it); };
-
-  // freshest window first so the list is "trending" rather than all-time classics
-  for (const window of [4, 5, undefined] as const) {
-    if (seen.size >= ctx.limit) break;
-    const q = new URLSearchParams({ search_query: keyword, sp: searchParams(window), hl: config.lang, gl: config.region });
-    const page = await request(`${ORIGIN}/results?${q}`, { session });
-    const data = extractJsonAfter(page.body, 'ytInitialData');
-    if (!data) throw new ScrapeError('parse', 'YouTube results page had no data payload (consent or bot check page)');
-    let { items, continuation } = parseSearch(data);
-    add(items);
-    const version = page.body.match(/"INNERTUBE_CLIENT_VERSION":"([^"]+)"/)?.[1] ?? '2.20241201.00.00';
-    for (let p = 0; p < 6 && continuation && seen.size < ctx.limit; p++) {
-      const more = await request(`${ORIGIN}/youtubei/v1/search?prettyPrint=false`, {
-        session,
-        method: 'POST',
-        headers: { 'content-type': 'application/json', accept: '*/*', origin: ORIGIN, referer: page.url, 'x-youtube-client-name': '1', 'x-youtube-client-version': version },
-        body: JSON.stringify({
-          context: { client: { clientName: 'WEB', clientVersion: version, hl: config.lang, gl: config.region } },
-          continuation,
-        }),
-      });
-      const parsed = parseSearch(more.json());
-      if (!parsed.items.length) break;
-      add(parsed.items);
-      continuation = parsed.continuation;
+  let firstError: unknown;
+  // freshest window first so the list is "trending" rather than all-time classics; the last pass has no filter at all
+  for (const sp of [searchParams(4), searchParams(5), searchParams(), '']) {
+    if (seen.size >= want) break;
+    try {
+      const q = new URLSearchParams({ search_query: keyword, hl: 'en', gl: config.region });
+      if (sp) q.set('sp', sp);
+      const page = await request(`${ORIGIN}/results?${q}`, { session });
+      const data = extractJsonAfter(page.body, 'ytInitialData');
+      if (!data) throw new ScrapeError('parse', 'YouTube results page had no data payload (consent or bot check page)');
+      let { items, continuation } = parseSearch(data);
+      add(items);
+      const version = page.body.match(/"INNERTUBE_CLIENT_VERSION":"([^"]+)"/)?.[1] ?? '2.20241201.00.00';
+      const visitor = page.body.match(/"VISITOR_DATA":"([^"]+)"/)?.[1];
+      for (let p = 0; p < 8 && continuation && seen.size < want; p++) {
+        const more = await request(`${ORIGIN}/youtubei/v1/search?prettyPrint=false`, {
+          session, method: 'POST', retries: 1,
+          headers: {
+            'content-type': 'application/json', accept: '*/*', origin: ORIGIN, referer: page.url,
+            'x-youtube-client-name': '1', 'x-youtube-client-version': version, ...(visitor ? { 'x-goog-visitor-id': visitor } : {}),
+          },
+          body: JSON.stringify({ context: { client: { clientName: 'WEB', clientVersion: version, hl: 'en', gl: config.region, visitorData: visitor } }, continuation }),
+        });
+        const parsed = parseSearch(more.json());
+        if (!parsed.items.length) break;
+        add(parsed.items);
+        continuation = parsed.continuation;
+      }
+    } catch (e) {
+      // one bad page must not throw away what the other passes found
+      firstError ??= e;
+      log(`youtube pass sp=${sp || 'none'} stopped: ${(e as Error).message}`);
     }
-    ctx.log(`youtube window=${window ?? 'all'} total=${seen.size}`);
+    log(`youtube sp=${sp || 'none'} total=${seen.size}`);
+  }
+  if (!seen.size && firstError) throw firstError;
+  return [...seen.values()];
+}
+
+/** Same search through the real browser, used when plain requests are turned away. */
+async function viaBrowser(keyword: string, want: number): Promise<Item[]> {
+  const seen = new Map<string, Item>();
+  for (const sp of [searchParams(4), searchParams()]) {
+    const payloads = await capture({
+      url: `${ORIGIN}/results?${new URLSearchParams({ search_query: keyword, sp, hl: 'en', gl: config.region })}`,
+      match: (u) => u.includes('/youtubei/v1/search'),
+      enough: (p) => parseSearch(p).items.length >= want,
+      maxScrolls: 12,
+      evaluate: 'window.ytInitialData',
+      challenge: /google\.com\/sorry|consent\.youtube\.com/,
+    });
+    for (const it of parseSearch(payloads).items) if (it.title && !seen.has(it.url)) seen.set(it.url, it);
+    if (seen.size >= want) break;
+  }
+  return [...seen.values()];
+}
+
+export const youtube: Scraper = async (keyword, ctx) => {
+  const session = new Session();
+  // skips the consent interstitial
+  session.setCookie('youtube.com', 'SOCS', 'CAI');
+  session.setCookie('youtube.com', 'CONSENT', 'YES+1');
+  let pool: Item[] = [];
+  let httpError: unknown;
+  try { pool = await viaHttp(keyword, session, config.poolSize, ctx.log); } catch (e) { httpError = e; }
+  if (pool.length < 20) {
+    ctx.log(`youtube switching to browser (${httpError ? (httpError as Error).message : `only ${pool.length} results`})`);
+    try {
+      const extra = await viaBrowser(keyword, config.poolSize);
+      const urls = new Set(pool.map((p) => p.url));
+      pool.push(...extra.filter((e) => !urls.has(e.url)));
+    } catch (e) {
+      if (!pool.length) throw new ScrapeError((e as ScrapeError).kind ?? 'network', `Requests: ${(httpError as Error)?.message ?? 'no results'} | Browser: ${(e as Error).message}`);
+    }
   }
 
-  const top = [...seen.values()].sort((a, b) => (b.views ?? 0) - (a.views ?? 0)).slice(0, ctx.limit);
+  const top = pool.sort((a, b) => (b.views ?? 0) - (a.views ?? 0)).slice(0, ctx.limit);
   const enrich = top.slice(0, config.youtubeEnrichTop);
   let cursor = 0;
   await Promise.all(Array.from({ length: Math.min(3, enrich.length) }, async () => {

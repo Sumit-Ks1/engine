@@ -1,9 +1,9 @@
 'use client';
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { PLATFORMS, type KeywordRow, type PlatformState } from '@/lib/types';
+import { PLATFORMS, labelOf, type Accounts, type KeywordRow, type PlatformState } from '@/lib/types';
 
-interface Stats { keywords: number; jobs: { queued: number; running: number; done: number; failed: number }; demo: boolean; refreshHours: number }
+interface Stats { keywords: number; jobs: { queued: number; running: number; done: number; failed: number }; demo: boolean; refreshHours: number; accounts?: Accounts }
 
 async function call(url: string, init?: RequestInit) {
   const res = await fetch(url, init);
@@ -11,6 +11,26 @@ async function call(url: string, init?: RequestInit) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error ?? 'Something went wrong.');
   return data;
+}
+
+/** One line per signed-in platform that has stopped collecting, with the way out. */
+export function AccountNotices({ accounts, only, onChange }: { accounts?: Accounts; only?: string; onChange?: () => void }) {
+  const paused = Object.entries(accounts ?? {}).filter(([id, a]) => a?.paused && (!only || only === id));
+  if (!paused.length) return null;
+  const resume = async (id: string) => { await fetch(`/api/accounts/${id}/resume`, { method: 'POST' }); onChange?.(); };
+  return (
+    <>
+      {paused.map(([id, a]) => (
+        <div className="banner" key={id}>
+          <b>{labelOf(id)} is paused.</b>{' '}
+          {a!.kind === 'login'
+            ? <>It is not signed in. Stop the engine, run <code>npm run login</code> in the engine folder, sign in, close the window, then start the engine again.</>
+            : <>{a!.reason}{a!.until ? ` It resumes by itself around ${new Date(a!.until).toLocaleString('en-IN', { hour: 'numeric', minute: '2-digit', day: 'numeric', month: 'short' })}.` : ''}{' '}
+              <button className="btn small" onClick={() => resume(id)}>Resume now</button></>}
+        </div>
+      ))}
+    </>
+  );
 }
 
 export function dotClass(s?: PlatformState) {
@@ -101,6 +121,8 @@ export default function Dashboard() {
 
       {stats?.demo && <div className="banner">Sample-data mode is on. Everything listed is generated placeholder data, not live results.</div>}
 
+      <AccountNotices accounts={stats?.accounts} onChange={load} />
+
       <section className="panel">
         <div className="row">
           <textarea className="input" rows={2} placeholder="Add keywords — separate with commas or new lines" value={text}
@@ -110,7 +132,7 @@ export default function Dashboard() {
           <button className="btn" disabled={busy} onClick={() => fileRef.current?.click()}>Upload sheet</button>
           <input ref={fileRef} type="file" accept=".xlsx,.csv,.txt" hidden onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
         </div>
-        <p className="hint">Upload an .xlsx or .csv with one keyword per cell. A leading # is optional. Each keyword is collected on all six platforms{stats ? ` and refreshed every ${stats.refreshHours} hours` : ''}.</p>
+        <p className="hint">Upload an .xlsx or .csv with one keyword per cell. A leading # is optional. Each keyword is collected on all six platforms and refreshed automatically.</p>
         {note && <p className={`note ${note.ok ? 'ok' : 'bad'}`}>{note.msg}</p>}
       </section>
 

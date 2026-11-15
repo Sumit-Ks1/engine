@@ -1,3 +1,4 @@
+import { config } from '../config.js';
 import { request, Session } from '../http/client.js';
 import { ScrapeError, type Item, type Scraper } from '../types.js';
 
@@ -40,7 +41,8 @@ export const pinterest: Scraper = async (keyword, ctx) => {
 
   const seen = new Map<string, Item>();
   let bookmark: string | null = null;
-  for (let page = 0; page < 8 && seen.size < ctx.limit; page++) {
+  // Pinterest has no "most saved" sort, so a deep pool is gathered and ranked afterwards
+  for (let page = 0; page < 16 && seen.size < config.poolSize; page++) {
     const data = {
       options: { query: keyword, scope: 'pins', rs: 'typed', page_size: 25, redux_normalize_feed: true, bookmarks: bookmark ? [bookmark] : [] },
       context: {},
@@ -56,9 +58,14 @@ export const pinterest: Scraper = async (keyword, ctx) => {
     };
     const csrf = session.getCookie('pinterest.com', 'csrftoken');
     if (csrf) headers['x-csrftoken'] = csrf;
-    const res = await request(`${ORIGIN}/resource/BaseSearchResource/get/?${q}`, { session, headers });
     let json: any;
-    try { json = res.json(); } catch { throw new ScrapeError('blocked', 'Pinterest returned a non-JSON page'); }
+    try {
+      const res = await request(`${ORIGIN}/resource/BaseSearchResource/get/?${q}`, { session, headers });
+      json = res.json();
+    } catch (e) {
+      if (seen.size) break; // keep what the earlier pages returned
+      throw e instanceof ScrapeError ? e : new ScrapeError('blocked', 'Pinterest returned a non-JSON page');
+    }
     const parsed = parsePins(json);
     for (const it of parsed.items) if (!seen.has(it.url)) seen.set(it.url, it);
     ctx.log(`pinterest page=${page} total=${seen.size}`);

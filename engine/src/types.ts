@@ -1,4 +1,4 @@
-export type ItemType = 'video' | 'short' | 'image' | 'post' | 'article' | 'ad';
+export type ItemType = 'video' | 'short' | 'image' | 'post' | 'article' | 'search' | 'ad';
 
 export interface Item {
   url: string;

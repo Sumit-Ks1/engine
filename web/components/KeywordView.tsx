@@ -1,10 +1,10 @@
 'use client';
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
-import { METRICS, PLATFORMS, type Item, type PlatformId, type PlatformState } from '@/lib/types';
-import { dotClass, stateLabel } from './Dashboard';
+import { METRICS, PLATFORMS, type Accounts, type Item, type PlatformId, type PlatformState } from '@/lib/types';
+import { AccountNotices, dotClass, stateLabel } from './Dashboard';
 
-interface Detail { keyword: { id: number; term: string }; platforms: Partial<Record<PlatformId, PlatformState>>; items?: Item[] }
+interface Detail { accounts?: Accounts; keyword: { id: number; term: string }; platforms: Partial<Record<PlatformId, PlatformState>>; items?: Item[] }
 
 const compact = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
 const full = new Intl.NumberFormat('en-IN');
@@ -20,11 +20,6 @@ function ago(ts?: number | string | null) {
   return new Date(ts).toLocaleDateString('en-IN', { year: 'numeric', month: 'short' });
 }
 
-const WALL: Partial<Record<PlatformId, string>> = {
-  instagram: 'Instagram shows hashtag results only to signed-in visitors, and no public posts were found for this keyword.',
-  twitter: 'X shows search results only to signed-in visitors, and no public posts were found for this keyword.',
-};
-
 export default function KeywordView({ id, initialPlatform }: { id: string; initialPlatform?: string }) {
   const [platform, setPlatform] = useState<PlatformId>(PLATFORMS.find((p) => p.id === initialPlatform)?.id ?? 'youtube');
   const [data, setData] = useState<Detail | null>(null);
@@ -36,7 +31,8 @@ export default function KeywordView({ id, initialPlatform }: { id: string; initi
     if (res.status === 401) { window.location.href = '/login'; return; }
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { setError(res.status === 404 ? 'This keyword no longer exists.' : body.error ?? 'Could not load results.'); return; }
-    setError(''); setData(body);
+    const stats = await fetch('/api/stats').then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    setError(''); setData({ ...body, accounts: stats?.accounts });
   }, [id, platform]);
 
   const state = data?.platforms[platform];
@@ -58,13 +54,13 @@ export default function KeywordView({ id, initialPlatform }: { id: string; initi
     setBusy(false);
   }
   function exportCsv() {
-    const cols = ['rank', 'title', 'url', 'type', 'author', 'views', 'likes', 'comments', 'shares', 'publishedAt'] as const;
+    const cols = ['rank', 'title', 'url', 'type', 'author', 'views', 'likes', 'comments', 'shares', 'publishedAt', 'signal'] as const;
     const esc = (v: unknown) => {
       let s = v === null || v === undefined ? '' : String(v);
       if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // stop spreadsheet apps treating scraped text as formulas
       return `"${s.replace(/"/g, '""')}"`;
     };
-    const lines = [cols.join(','), ...(data?.items ?? []).map((it, i) => cols.map((c) => esc(c === 'rank' ? i + 1 : it[c])).join(','))];
+    const lines = [cols.join(','), ...(data?.items ?? []).map((it, i) => cols.map((c) => esc(c === 'rank' ? i + 1 : c === 'signal' ? it.extra?.signal : it[c])).join(','))];
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv' }));
     a.download = `${data?.keyword.term ?? 'keyword'}-${platform}.csv`;
@@ -91,6 +87,7 @@ export default function KeywordView({ id, initialPlatform }: { id: string; initi
               </button>
             ))}
           </div>
+          <AccountNotices accounts={data?.accounts} only={platform} onChange={load} />
           <section className="panel">
             <div className="toolbar">
               <span className="muted">
@@ -101,20 +98,21 @@ export default function KeywordView({ id, initialPlatform }: { id: string; initi
               <button className="btn small" disabled={!items.length} onClick={exportCsv}>Export CSV</button>
               <button className="btn small" disabled={busy || working} onClick={refresh}>{working ? 'Refreshing…' : 'Refresh now'}</button>
             </div>
-            {state?.status === 'failed' && (
+            {state?.status === 'failed' && !data?.accounts?.[platform]?.paused && (
               <p className="note bad">
-                {state.errorKind === 'login_required' ? WALL[platform] ?? 'This platform asked for a sign-in.'
-                  : state.errorKind === 'blocked' ? `${label} turned the last attempt away.${items.length ? ' Showing the last results collected.' : ''}`
-                  : `The last attempt did not finish.${items.length ? ' Showing the last results collected.' : ''}`}
+                {state.errorKind === 'blocked' ? `${label} turned the last attempt away.` : 'The last attempt did not finish.'}
+                {items.length ? ' Showing the last results collected.' : ''}
+                {state.error && <><br /><span className="muted">Reason: {state.error}</span></>}
               </p>
             )}
-            {platform === 'google' && items.length > 0 && <p className="hint" style={{ marginBottom: 10 }}>Google publishes no view or like counts. These are the stories it ranks highest for this keyword, newest window first.</p>}
+            {platform === 'google' && items.length > 0 && <p className="hint" style={{ marginBottom: 10 }}>Google has no views or likes. Shown here: the fastest-rising and most-searched related searches from Google Trends, then the stories covered by the most news outlets.</p>}
             {items.length ? (
               <div className="scroll">
                 <table>
                   <thead>
                     <tr>
-                      <th className="num">#</th><th /><th>{platform === 'google' ? 'Story' : 'Post'}</th><th>Type</th>
+                      <th className="num">#</th><th /><th>{platform === 'google' ? 'Search / story' : 'Post'}</th><th>Type</th>
+                      {platform === 'google' && <th>Signal</th>}
                       {m.views && <th className="num">{m.views}</th>}
                       {m.likes && <th className="num">{m.likes}</th>}
                       {m.comments && <th className="num">{m.comments}</th>}
@@ -134,6 +132,7 @@ export default function KeywordView({ id, initialPlatform }: { id: string; initi
                           {it.author && <div className="sub">{it.author}{it.extra?.subreddit ? ` · ${it.extra.subreddit}` : ''}{it.extra?.duration ? ` · ${it.extra.duration}` : ''}</div>}
                         </td>
                         <td><span className={`type ${it.type === 'ad' ? 'ad' : ''}`}>{it.type}</span></td>
+                        {platform === 'google' && <td style={{ whiteSpace: 'nowrap' }}>{it.extra?.signal ?? '—'}</td>}
                         {m.views && <td className="num"><Num v={it.views} /></td>}
                         {m.likes && <td className="num"><Num v={it.likes} /></td>}
                         {m.comments && <td className="num"><Num v={it.comments} /></td>}

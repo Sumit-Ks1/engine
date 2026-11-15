@@ -30,6 +30,35 @@ export const config = {
   perPlatformConcurrency: int('PER_PLATFORM_CONCURRENCY', 1),
   maxAttempts: int('MAX_ATTEMPTS', 3),
   refreshHours: int('REFRESH_HOURS', 12),
+  /** Signed-in platforms are paced slowly, so Instagram refreshes less often. */
+  refreshHoursFor: {
+    instagram: int('REFRESH_HOURS_INSTAGRAM', 48),
+    twitter: int('REFRESH_HOURS_TWITTER', 24),
+    reddit: int('REFRESH_HOURS_REDDIT', 24),
+  } as Partial<Record<Platform, number>>,
+  /** Seconds between two keywords on a signed-in platform (randomised +-40%). */
+  accountGapSeconds: {
+    instagram: int('GAP_SECONDS_INSTAGRAM', 60),
+    twitter: int('GAP_SECONDS_TWITTER', 40),
+    reddit: int('GAP_SECONDS_REDDIT', 12),
+  } as Partial<Record<Platform, number>>,
+  /** Keywords per day on a signed-in platform. */
+  accountDailyCap: {
+    instagram: int('DAILY_CAP_INSTAGRAM', 700),
+    twitter: int('DAILY_CAP_TWITTER', 900),
+    reddit: int('DAILY_CAP_REDDIT', 2000),
+  } as Partial<Record<Platform, number>>,
+  /** Hours a signed-in platform rests after it rate-limits or challenges the session. */
+  accountCooldownHours: int('ACCOUNT_COOLDOWN_HOURS', 6),
+  /** Candidates gathered per keyword before ranking down to resultLimit. */
+  poolSize: int('POOL_SIZE', 300),
+  browser: {
+    profileDir: env.PROFILE_DIR || './data/browser-profile',
+    /** Installed browser to drive: chrome | msedge. Ignored when BROWSER_PATH is set. */
+    channel: env.BROWSER_CHANNEL || 'chrome',
+    path: env.BROWSER_PATH || '',
+    headless: env.BROWSER_HEADLESS !== '0',
+  },
   /** Minimum gap between two requests to the same host (jitter is added). */
   hostMinIntervalMs: int('HOST_MIN_INTERVAL_MS', 1200),
   requestTimeoutMs: int('REQUEST_TIMEOUT_MS', 25000),

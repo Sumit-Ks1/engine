@@ -32,6 +32,8 @@ header.top { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; mar
 .note { margin: 10px 0 0; font-size: 13px; }
 .note.ok { color: var(--ok); } .note.bad { color: var(--bad); }
 .banner { background: var(--chip); border: 1px dashed var(--warn); color: var(--warn); border-radius: 8px; padding: 8px 12px; margin-bottom: 16px; font-size: 13px; }
+.banner code { background: var(--panel); padding: 1px 5px; border-radius: 4px; }
+.banner .btn { margin-left: 6px; }
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }

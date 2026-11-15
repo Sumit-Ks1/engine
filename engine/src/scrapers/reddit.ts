@@ -1,5 +1,7 @@
-import { request, Session } from '../http/client.js';
+import { browserJson } from '../browser.js';
+import { config } from '../config.js';
 import { ScrapeError, type Item, type Scraper } from '../types.js';
+import { sleep } from '../util.js';
 import { decodeEntities } from '../util.js';
 
 export function parseListing(json: any): { items: Item[]; after: string | null } {
@@ -28,32 +30,27 @@ export function parseListing(json: any): { items: Item[]; after: string | null }
 }
 
 export const reddit: Scraper = async (keyword, ctx) => {
-  const session = new Session();
   const seen = new Map<string, Item>();
-  let host = 'www.reddit.com';
+  // freshest window first; every window is sorted by Reddit's own "top"
   for (const t of ['week', 'month', 'year'] as const) {
     let after: string | null = null;
-    for (let page = 0; page < 3 && seen.size < ctx.limit; page++) {
-      const q = new URLSearchParams({ q: keyword, sort: 'top', t, limit: '100', type: 'link', raw_json: '1', include_over_18: 'off' });
+    for (let page = 0; page < 2 && seen.size < config.poolSize; page++) {
+      const q = new URLSearchParams({ q: keyword, sort: 'top', t, limit: '100', type: 'link', raw_json: '1' });
       if (after) q.set('after', after);
-      let res;
-      try {
-        res = await request(`https://${host}/search.json?${q}`, { session, headers: { accept: 'application/json' } });
-      } catch (e) {
-        if (host === 'www.reddit.com' && e instanceof ScrapeError && e.kind === 'blocked') {
-          host = 'old.reddit.com';
-          res = await request(`https://${host}/search.json?${q}`, { session, headers: { accept: 'application/json' } });
-        } else throw e;
+      const { status, json } = await browserJson(`https://www.reddit.com/search.json?${q}`);
+      if (status === 429) throw new ScrapeError('blocked', 'Reddit is rate-limiting this account.');
+      if (status === 401 || status === 403 || !json?.data) {
+        throw new ScrapeError('login_required', `Reddit refused the search (status ${status}). Stop the engine, run "npm run login", sign in to Reddit, then start the engine again.`);
       }
-      let json: any;
-      try { json = res.json(); } catch { throw new ScrapeError('blocked', 'Reddit returned a non-JSON page (bot check)'); }
       const parsed = parseListing(json);
       for (const it of parsed.items) if (!seen.has(it.url)) seen.set(it.url, it);
       after = parsed.after;
       if (!after) break;
+      await sleep(1500 + Math.random() * 2000);
     }
     ctx.log(`reddit t=${t} total=${seen.size}`);
-    if (seen.size >= ctx.limit) break;
+    if (seen.size >= config.poolSize) break;
+    await sleep(1500 + Math.random() * 2000);
   }
   return [...seen.values()];
 };
