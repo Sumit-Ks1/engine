@@ -61,6 +61,8 @@ export const config = {
     headless: env.BROWSER_HEADLESS === '1',
     /** Keep the working window on screen instead of parking it off-screen. */
     visible: env.BROWSER_VISIBLE === '1',
+    /** The browser closes itself after this many seconds without work. */
+    idleSeconds: int('BROWSER_IDLE_SECONDS', 90),
   },
   /** Minimum gap between two requests to the same host (jitter is added). */
   hostMinIntervalMs: int('HOST_MIN_INTERVAL_MS', 1200),

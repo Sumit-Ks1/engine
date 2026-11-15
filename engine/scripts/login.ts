@@ -4,11 +4,12 @@
  * The engine must be stopped while this runs.
  */
 import { chromium } from 'playwright-core';
-import { launchOptions, profileDir } from '../src/browser.js';
+import { launchOptions, markCleanExit, profileDir } from '../src/browser.js';
 
 const SITES = ['https://www.instagram.com/accounts/login/', 'https://x.com/i/flow/login', 'https://www.reddit.com/login/'];
 
 try {
+  markCleanExit();
   const ctx = await chromium.launchPersistentContext(profileDir(), launchOptions(false, true));
   const pages = ctx.pages();
   for (const [i, url] of SITES.entries()) {

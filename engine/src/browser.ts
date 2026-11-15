@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { chromium, type BrowserContext, type Page } from 'playwright-core';
 import { config } from './config.js';
@@ -23,7 +23,8 @@ export function launchOptions(headless: boolean, onScreen = config.browser.visib
     ...(config.browser.path ? { executablePath: config.browser.path } : { channel: config.browser.channel }),
     viewport: { width: 1366, height: 850 },
     locale: `${config.lang}-${config.region}`,
-    args: ['--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check', ...windowArgs,
+    args: ['--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check',
+      '--hide-crash-restore-bubble', '--disable-session-crashed-bubble', ...windowArgs,
       ...(process.platform === 'linux' ? ['--no-sandbox'] : [])],
   };
 }
@@ -34,8 +35,40 @@ export const profileDir = () => {
   return dir;
 };
 
+/**
+ * If the engine was stopped while the browser was open, Chrome remembers an unclean exit and
+ * offers to "Restore pages". Marking the profile as cleanly closed prevents that prompt.
+ */
+export function markCleanExit() {
+  const file = join(profileDir(), 'Default', 'Preferences');
+  if (!existsSync(file)) return;
+  try {
+    const prefs = JSON.parse(readFileSync(file, 'utf8'));
+    prefs.profile = { ...prefs.profile, exit_type: 'Normal', exited_cleanly: true };
+    writeFileSync(file, JSON.stringify(prefs));
+  } catch { /* unreadable preferences: Chrome rebuilds them */ }
+}
+
+let users = 0;
+let idleTimer: NodeJS.Timeout | null = null;
+
+/** Runs work in the browser, and closes the browser once nothing has used it for a while. */
+async function withBrowser<T>(fn: (c: BrowserContext) => Promise<T>): Promise<T> {
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  users++;
+  try {
+    return await fn(await context());
+  } finally {
+    if (--users === 0) {
+      idleTimer = setTimeout(() => { idleTimer = null; if (!users) void closeBrowser(); }, config.browser.idleSeconds * 1000);
+      idleTimer.unref();
+    }
+  }
+}
+
 function context(): Promise<BrowserContext> {
   if (!ctx) {
+    markCleanExit();
     ctx = chromium.launchPersistentContext(profileDir(), launchOptions(config.browser.headless)).then((c) => {
       c.on('close', () => { ctx = null; });
       return c;
@@ -54,6 +87,7 @@ function context(): Promise<BrowserContext> {
 
 export async function closeBrowser() {
   const c = await ctx?.catch(() => null);
+  ctx = null;
   await c?.close().catch(() => undefined);
 }
 
@@ -109,8 +143,11 @@ export interface Captured { payloads: unknown[]; finalUrl: string; responses: st
  * Opens a page like a person would, scrolls it, and returns every JSON payload the site's
  * own code loaded. Parsers then read the payloads, so nothing depends on endpoint details.
  */
-export async function capture(opts: CaptureOptions): Promise<Captured> {
-  const c = await context();
+export function capture(opts: CaptureOptions): Promise<Captured> {
+  return withBrowser((c) => captureIn(c, opts));
+}
+
+async function captureIn(c: BrowserContext, opts: CaptureOptions): Promise<Captured> {
   const page: Page = await c.newPage();
   const payloads: unknown[] = [];
   const responses: string[] = [];
@@ -174,8 +211,8 @@ export async function capture(opts: CaptureOptions): Promise<Captured> {
  * Opens a JSON address as a normal page visit in the signed-in browser, exactly as if it
  * had been typed into the address bar, and returns what the site answered.
  */
-export async function visitJson(url: string, loginWall?: RegExp, debugName?: string): Promise<{ status: number; json: any; snippet: string }> {
-  const c = await context();
+export function visitJson(url: string, loginWall?: RegExp, debugName?: string): Promise<{ status: number; json: any; snippet: string }> {
+  return withBrowser(async (c) => {
   const page = await c.newPage();
   try {
     const res = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch((e: Error) => {
@@ -189,10 +226,10 @@ export async function visitJson(url: string, loginWall?: RegExp, debugName?: str
   } finally {
     await page.close().catch(() => undefined);
   }
+  });
 }
 
 /** Whether the saved profile holds a given sign-in cookie. */
-export async function hasCookie(url: string, name: string): Promise<boolean> {
-  const c = await context();
-  return (await c.cookies(url)).some((k) => k.name === name && !!k.value);
+export function hasCookie(url: string, name: string): Promise<boolean> {
+  return withBrowser(async (c) => (await c.cookies(url)).some((k) => k.name === name && !!k.value));
 }
