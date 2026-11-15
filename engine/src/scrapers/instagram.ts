@@ -34,23 +34,37 @@ export function parseMedia(payloads: unknown): Item[] {
   return [...items.values()];
 }
 
+/** True when a post actually uses the keyword: in its caption (as hashtag or text) or its account name. */
+export function mentions(item: Item, keyword: string): boolean {
+  const tag = toTag(keyword);
+  const hay = `${item.title} ${item.author ?? ''}`.toLowerCase();
+  return (!!tag && hay.replace(/[\s._-]/g, '').includes(tag)) || hay.includes(keyword.toLowerCase());
+}
+
 export const instagram: Scraper = async (keyword, ctx) => {
   const tag = toTag(keyword);
-  const queries = [...new Set([tag ? `#${tag}` : '', keyword].filter(Boolean))];
+  const pages = [
+    ...(tag ? [`${ORIGIN}/explore/search/keyword/?q=${encodeURIComponent(`#${tag}`)}`, `${ORIGIN}/explore/tags/${encodeURIComponent(tag)}/`] : []),
+    `${ORIGIN}/explore/search/keyword/?q=${encodeURIComponent(keyword)}`,
+  ];
   const all = new Map<string, Item>();
-  for (const q of queries) {
+  let loaded = 0;
+  for (const url of [...new Set(pages)]) {
+    // the page also loads the home feed and suggestions in the background; only posts that use the keyword count
+    const relevant = (p: unknown) => parseMedia(p).filter((it) => mentions(it, keyword));
     const payloads = await capture({
-      url: `${ORIGIN}/explore/search/keyword/?q=${encodeURIComponent(q)}`,
+      url,
       match: (u) => u.startsWith(ORIGIN) && /\/(api\/v1|graphql)\//.test(u),
-      enough: (p) => parseMedia(p).length >= config.poolSize / queries.length,
-      maxScrolls: 14,
+      enough: (p) => relevant(p).length >= ctx.limit,
+      maxScrolls: 16,
       embedded: true,
       loginWall: /\/accounts\/(login|signup|emailsignup)/,
-      challenge: /\/challenge\/|\/accounts\/suspended|\/accounts\/onetap/,
+      challenge: /\/challenge\/|\/accounts\/suspended/,
     });
-    for (const it of parseMedia(payloads)) if (!all.has(it.url)) all.set(it.url, it);
-    ctx.log(`instagram q="${q}" total=${all.size}`);
-    if (all.size >= config.poolSize) break;
+    loaded += parseMedia(payloads).length;
+    for (const it of relevant(payloads)) if (!all.has(it.url)) all.set(it.url, it);
+    ctx.log(`instagram ${url.slice(ORIGIN.length)} posts seen=${loaded} using keyword=${all.size}`);
+    if (all.size >= ctx.limit) break;
   }
   return [...all.values()];
 };

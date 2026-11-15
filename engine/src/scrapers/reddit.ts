@@ -1,4 +1,4 @@
-import { browserJson } from '../browser.js';
+import { hasCookie, visitJson } from '../browser.js';
 import { config } from '../config.js';
 import { ScrapeError, type Item, type Scraper } from '../types.js';
 import { sleep } from '../util.js';
@@ -29,6 +29,21 @@ export function parseListing(json: any): { items: Item[]; after: string | null }
   return { items, after: json?.data?.after ?? null };
 }
 
+const LOGIN_HELP = 'Stop the engine, run "npm run login", sign in on the Reddit tab, close the window, then start the engine again.';
+
+async function search(q: URLSearchParams) {
+  let last = { status: 0, json: null as any, snippet: '' };
+  for (const host of ['www.reddit.com', 'old.reddit.com']) {
+    last = await visitJson(`https://${host}/search.json?${q}`, /\/login/);
+    if (last.json?.data?.children) return last.json;
+    if (last.status === 429) break;
+  }
+  if (last.status === 429) throw new ScrapeError('blocked', 'Reddit is rate-limiting this account.');
+  if (!(await hasCookie('https://www.reddit.com', 'reddit_session'))) throw new ScrapeError('login_required', `No Reddit sign-in is saved. ${LOGIN_HELP}`);
+  // signed in, yet refused: say exactly what Reddit answered instead of guessing
+  throw new ScrapeError('parse', `Reddit answered status ${last.status}: ${last.snippet || 'empty page'}`);
+}
+
 export const reddit: Scraper = async (keyword, ctx) => {
   const seen = new Map<string, Item>();
   // freshest window first; every window is sorted by Reddit's own "top"
@@ -37,12 +52,7 @@ export const reddit: Scraper = async (keyword, ctx) => {
     for (let page = 0; page < 2 && seen.size < config.poolSize; page++) {
       const q = new URLSearchParams({ q: keyword, sort: 'top', t, limit: '100', type: 'link', raw_json: '1' });
       if (after) q.set('after', after);
-      const { status, json } = await browserJson(`https://www.reddit.com/search.json?${q}`);
-      if (status === 429) throw new ScrapeError('blocked', 'Reddit is rate-limiting this account.');
-      if (status === 401 || status === 403 || !json?.data) {
-        throw new ScrapeError('login_required', `Reddit refused the search (status ${status}). Stop the engine, run "npm run login", sign in to Reddit, then start the engine again.`);
-      }
-      const parsed = parseListing(json);
+      const parsed = parseListing(await search(q));
       for (const it of parsed.items) if (!seen.has(it.url)) seen.set(it.url, it);
       after = parsed.after;
       if (!after) break;

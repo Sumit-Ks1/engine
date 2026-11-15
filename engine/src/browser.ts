@@ -52,6 +52,13 @@ export async function closeBrowser() {
   await c?.close().catch(() => undefined);
 }
 
+/** Parses a JSON body even when it carries an anti-hijacking prefix such as `for (;;);`. */
+export function looseJson(body: string): unknown {
+  const start = body.search(/[{[]/);
+  if (start < 0 || start > 20) return undefined;
+  try { return JSON.parse(body.slice(start)); } catch { return undefined; }
+}
+
 const rand = (min: number, max: number) => min + Math.random() * (max - min);
 
 export interface CaptureOptions {
@@ -85,8 +92,8 @@ export async function capture(opts: CaptureOptions): Promise<unknown[]> {
     const url = res.url();
     if (!opts.match(url)) return;
     if (res.status() === 429) { limited = true; return; }
-    if (!(res.headers()['content-type'] ?? '').includes('json')) return;
-    const p = res.json().then((j) => { payloads.push(j); }, () => undefined).finally(() => pending.delete(p));
+    // some sites label JSON as text/javascript and prefix it with a guard, so go by content, not by label
+    const p = res.text().then((t) => { const j = looseJson(t); if (j !== undefined) payloads.push(j); }, () => undefined).finally(() => pending.delete(p));
     pending.add(p);
   });
   try {
@@ -127,13 +134,27 @@ export async function capture(opts: CaptureOptions): Promise<unknown[]> {
   }
 }
 
-/** JSON request made by the signed-in browser itself (same cookies, same network identity). */
-export async function browserJson(url: string): Promise<{ status: number; json: any }> {
+/**
+ * Opens a JSON address as a normal page visit in the signed-in browser, exactly as if it
+ * had been typed into the address bar, and returns what the site answered.
+ */
+export async function visitJson(url: string, loginWall?: RegExp): Promise<{ status: number; json: any; snippet: string }> {
   const c = await context();
-  const res = await c.request.get(url, { headers: { accept: 'application/json' }, timeout: 30_000 }).catch((e: Error) => {
-    throw new ScrapeError('network', e.message.split('\n')[0]);
-  });
-  let json: any = null;
-  try { json = await res.json(); } catch { /* html error page */ }
-  return { status: res.status(), json };
+  const page = await c.newPage();
+  try {
+    const res = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch((e: Error) => {
+      throw new ScrapeError('network', `Page did not load: ${e.message.split('\n')[0]}`);
+    });
+    if (loginWall?.test(page.url())) throw new ScrapeError('login_required', 'Not signed in.');
+    const body = (await res?.text().catch(() => '')) || (await page.evaluate(() => document.body?.innerText ?? '').catch(() => ''));
+    return { status: res?.status() ?? 0, json: looseJson(body) ?? null, snippet: body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160) };
+  } finally {
+    await page.close().catch(() => undefined);
+  }
+}
+
+/** Whether the saved profile holds a given sign-in cookie. */
+export async function hasCookie(url: string, name: string): Promise<boolean> {
+  const c = await context();
+  return (await c.cookies(url)).some((k) => k.name === name && !!k.value);
 }

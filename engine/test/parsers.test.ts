@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseNewsRss, parseRelated } from '../src/scrapers/google.js';
-import { parseMedia } from '../src/scrapers/instagram.js';
+import { mentions, parseMedia } from '../src/scrapers/instagram.js';
+import { looseJson } from '../src/browser.js';
 import { parsePins } from '../src/scrapers/pinterest.js';
 import { parseListing } from '../src/scrapers/reddit.js';
 import { parseTimeline } from '../src/scrapers/twitter.js';
@@ -92,6 +93,17 @@ test('instagram media from any payload shape', () => {
   assert.equal(items.length, 2);
   assert.deepEqual([items[0].url, items[0].views, items[0].likes, items[0].type, items[0].author], ['https://www.instagram.com/reel/Cxyz12/', 50000, 1000, 'video', '@joe']);
   assert.deepEqual([items[1].url, items[1].type, items[1].author], ['https://www.instagram.com/p/Cimg77/', 'image', '@amy']);
+});
+
+test('instagram keeps only posts that use the keyword', () => {
+  const post = (title: string, author = '@someone') => ({ url: 'u', title, type: 'image' as const, author });
+  assert.ok(mentions(post('Best mattress ever #WakeFit #sleep'), 'wakefit'));
+  assert.ok(mentions(post('New launch', '@wakefit.co'), 'wakefit'));
+  assert.ok(mentions(post('my #HomeDecor ideas'), 'home decor'));
+  assert.ok(mentions(post('simple home decor tips'), 'Home Decor'));
+  assert.ok(!mentions(post('Big developments for Karnataka', '@narendramodi'), 'wakefit'));
+  assert.deepEqual(looseJson('for (;;);{"a":1}'), { a: 1 });
+  assert.equal(looseJson('<html>nope</html>'), undefined);
 });
 
 test('x search timeline', () => {
