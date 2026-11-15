@@ -3,14 +3,19 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.13" },
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=.env src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node --env-file-if-exists=.env dist/server.js",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "gateways": "tsx --env-file-if-exists=.env scripts/aws-gateways.ts"
+    "gateways": "tsx --env-file-if-exists=.env scripts/aws-gateways.ts",
+    "predev": "node scripts/check-node.cjs",
+    "prestart": "node scripts/check-node.cjs",
+    "pretest": "node scripts/check-node.cjs"
   },
   "dependencies": {
     "fastify": "^5.2.0",
