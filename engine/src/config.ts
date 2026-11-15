@@ -76,6 +76,8 @@ export const config = {
   /** Rotating egress: plain proxies and/or AWS API Gateway endpoints per host. */
   proxyUrls: (env.PROXY_URLS || '').split(',').map((s) => s.trim()).filter(Boolean),
   gateways: loadGateways(),
+  /** Optional Reddit developer app (reddit.com/prefs/apps, type "script"). When set, Reddit uses the official API. */
+  reddit: { clientId: env.REDDIT_CLIENT_ID || '', clientSecret: env.REDDIT_CLIENT_SECRET || '' },
   /** Generates clearly-labelled sample data instead of scraping. Never enable in production. */
   demoMode: env.DEMO_MODE === '1',
 };

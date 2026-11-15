@@ -4,7 +4,7 @@ import { parseNewsRss, parseRelated } from '../src/scrapers/google.js';
 import { mentions, parseMedia, shortcodeToId } from '../src/scrapers/instagram.js';
 import { looseJson } from '../src/browser.js';
 import { parsePins } from '../src/scrapers/pinterest.js';
-import { parseListing } from '../src/scrapers/reddit.js';
+import { parseListing, parseTiles } from '../src/scrapers/reddit.js';
 import { parseTimeline } from '../src/scrapers/twitter.js';
 import { parseSearch, parseWatch, searchParams } from '../src/scrapers/youtube.js';
 import { rank } from '../src/scrapers/index.js';
@@ -64,6 +64,19 @@ test('reddit listing', () => {
   assert.equal(after, 't3_x');
   assert.equal(items.length, 1);
   assert.deepEqual([items[0].url, items[0].title, items[0].likes, items[0].comments, items[0].type], ['https://www.reddit.com/r/a/comments/1/t/', 'A & B', 5400, 321, 'video']);
+});
+
+test('reddit search page cards', () => {
+  const card = { path: '/r/india/comments/1abc/wakefit_review/', ts: '2026-11-10T10:00:00.000Z', thumb: 't.jpg' };
+  const items = parseTiles([
+    { ...card, title: '', nums: [], text: '', thumb: null },
+    { ...card, title: 'Wakefit mattress review after 2 years', nums: ['1523', '87'], text: 'r/india · 5d ago Wakefit mattress review after 2 years 1.5K votes · 87 comments' },
+    { path: '/r/ads/comments/2xyz/buy/', title: 'Buy now', nums: ['12', '3'], text: 'Promoted Buy now', ts: null, thumb: null },
+  ]);
+  assert.equal(items.length, 2);
+  assert.deepEqual([items[0].url, items[0].title, items[0].likes, items[0].comments, items[0].author, items[0].publishedAt],
+    ['https://www.reddit.com/r/india/comments/1abc/wakefit_review/', 'Wakefit mattress review after 2 years', 1523, 87, 'r/india', '2026-11-10T10:00:00.000Z']);
+  assert.deepEqual([items[1].type, items[1].likes, items[1].comments], ['ad', 12, 3]);
 });
 
 test('google news rss', () => {

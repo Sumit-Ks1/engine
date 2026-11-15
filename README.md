@@ -80,8 +80,8 @@ Signed-in platforms deliberately ignore this: an account that hops between addre
 |-----------|---------------------------------------------------------|--------------------------------------------|
 | YouTube   | Search sorted by view count (month, year, all time)     | Views; likes/comments for the top `YOUTUBE_ENRICH_TOP` |
 | Instagram | Signed-in keyword search grid, then `#tag` search       | Plays, likes, comments (looked up for the top `INSTAGRAM_ENRICH_TOP`) |
-| X         | Signed-in "Top" search                                  | Views, likes, replies, reposts; ads tagged |
-| Reddit    | Signed-in search, top of week / month / year            | Upvotes, comments, crossposts              |
+| X         | Signed-in "Top" search, topped up from "Latest"         | Views, likes, replies, reposts; ads tagged |
+| Reddit    | Signed-in search page, top of week / month / year (or Reddit's API if `REDDIT_CLIENT_ID` is set) | Upvotes, comments |
 | Pinterest | Pin search, deep pool then ranked                       | Reactions, comments, saves; ads tagged     |
 | Google    | Google Trends rising + top related searches, then news stories | Growth %, interest score, outlets covering |
 

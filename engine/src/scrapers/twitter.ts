@@ -44,18 +44,23 @@ export function parseTimeline(payloads: unknown): Item[] {
 }
 
 export const twitter: Scraper = async (keyword, ctx) => {
-  const { payloads } = await capture({
-    // "Top" tab: X's own ranking of the most engaged posts for the query
-    url: `https://x.com/search?${new URLSearchParams({ q: keyword, src: 'typed_query', f: 'top' })}`,
-    match: (u) => u.includes('/SearchTimeline'),
-    enough: (p) => parseTimeline(p).length >= config.poolSize,
-    maxScrolls: 20,
-    loginWall: /\/i\/flow\/login|\/login(\?|$)|x\.com\/?(\?|$)/,
-    challenge: /\/account\/access|\/i\/flow\/(?!login)/,
-    thin: (p) => parseTimeline(p).length < 10,
-    debugName: `twitter-${keyword}`,
-  });
-  const items = parseTimeline(payloads);
-  ctx.log(`twitter total=${items.length}`);
-  return items;
+  const all: unknown[] = [];
+  // "Top" is a short list X curates itself; "Latest" tops the pool up, and ranking by views happens afterwards
+  for (const tab of ['top', 'live'] as const) {
+    const { payloads } = await capture({
+      url: `https://x.com/search?${new URLSearchParams({ q: keyword, src: 'typed_query', f: tab })}`,
+      match: (u) => u.includes('/SearchTimeline'),
+      enough: (p) => parseTimeline([...all, ...p]).length >= config.poolSize,
+      maxScrolls: 25,
+      loginWall: /\/i\/flow\/login|\/login(\?|$)|x\.com\/?(\?|$)/,
+      challenge: /\/account\/access|\/i\/flow\/(?!login)/,
+      thin: (p) => parseTimeline(p).length < 10,
+      debugName: `twitter-${keyword}-${tab}`,
+    });
+    all.push(...payloads);
+    const n = parseTimeline(all).length;
+    ctx.log(`twitter tab=${tab} total=${n}`);
+    if (n >= ctx.limit) break;
+  }
+  return parseTimeline(all);
 };

@@ -99,6 +99,8 @@ export interface CaptureOptions {
   /** When this returns true at the end, a screenshot and summary are saved under data/debug. */
   thin?: (payloads: unknown[]) => boolean;
   debugName?: string;
+  /** Page the visit appears to come from. */
+  referer?: string;
 }
 
 export interface Captured { payloads: unknown[]; finalUrl: string; responses: string[] }
@@ -124,7 +126,7 @@ export async function capture(opts: CaptureOptions): Promise<Captured> {
     pending.add(p);
   });
   try {
-    await page.goto(opts.url, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch((e: Error) => {
+    await page.goto(opts.url, { waitUntil: 'domcontentloaded', timeout: 45_000, referer: opts.referer }).catch((e: Error) => {
       throw new ScrapeError('network', `Page did not load: ${e.message.split('\n')[0]}`);
     });
     await sleep(rand(2500, 4500));
@@ -142,7 +144,10 @@ export async function capture(opts: CaptureOptions): Promise<Captured> {
       const extra = await page.evaluate(opts.evaluate).catch(() => null);
       if (extra) payloads.push(extra);
     }
-    await opts.onPage?.(page, 'loaded');
+    try { await opts.onPage?.(page, 'loaded'); } catch (e) {
+      if (opts.debugName) await saveDebug(page, opts.debugName, { error: (e as Error).message });
+      throw e;
+    }
     let idle = 0;
     for (let i = 0; i < opts.maxScrolls && !opts.enough(payloads) && !limited; i++) {
       const before = payloads.length;
