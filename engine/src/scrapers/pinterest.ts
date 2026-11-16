@@ -42,7 +42,7 @@ export const pinterest: Scraper = async (keyword, ctx) => {
   const seen = new Map<string, Item>();
   let bookmark: string | null = null;
   // Pinterest has no "most saved" sort, so a deep pool is gathered and ranked afterwards
-  for (let page = 0; page < 16 && seen.size < config.poolSize; page++) {
+  for (let page = 0; page < 16 && seen.size < config.poolSize && !ctx.cancelled(); page++) {
     const data = {
       options: { query: keyword, scope: 'pins', rs: 'typed', page_size: 25, redux_normalize_feed: true, bookmarks: bookmark ? [bookmark] : [] },
       context: {},

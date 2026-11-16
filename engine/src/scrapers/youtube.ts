@@ -95,13 +95,13 @@ const applyDetails = (it: Item, d: ReturnType<typeof fromRaw>) => {
   return d.likes !== null || d.publishedAt !== null;
 };
 
-async function viaHttp(keyword: string, session: Session, want: number, log: (m: string) => void): Promise<Item[]> {
+async function viaHttp(keyword: string, session: Session, want: number, log: (m: string) => void, cancelled: () => boolean): Promise<Item[]> {
   const seen = new Map<string, Item>();
   const add = (list: Item[]) => { for (const it of list) if (it.title && !seen.has(it.url)) seen.set(it.url, it); };
   let firstError: unknown;
   // freshest window first so the list is "trending" rather than all-time classics; the last pass has no filter at all
   for (const sp of [searchParams(4), searchParams(5), searchParams(), '']) {
-    if (seen.size >= want) break;
+    if (seen.size >= want || cancelled()) break;
     try {
       const q = new URLSearchParams({ search_query: keyword, hl: 'en', gl: config.region });
       if (sp) q.set('sp', sp);
@@ -138,10 +138,11 @@ async function viaHttp(keyword: string, session: Session, want: number, log: (m:
 }
 
 /** Same search through the real browser, used when plain requests are turned away. */
-async function viaBrowser(keyword: string, want: number): Promise<Item[]> {
+async function viaBrowser(keyword: string, want: number, cancelled: () => boolean): Promise<Item[]> {
   const seen = new Map<string, Item>();
   for (const sp of [searchParams(4), searchParams()]) {
     const { payloads } = await capture({
+      cancelled: cancelled,
       url: `${ORIGIN}/results?${new URLSearchParams({ search_query: keyword, sp, hl: 'en', gl: config.region })}`,
       match: (u) => u.includes('/youtubei/v1/search'),
       enough: (p) => parseSearch(p).items.length >= want,
@@ -162,11 +163,11 @@ export const youtube: Scraper = async (keyword, ctx) => {
   session.setCookie('youtube.com', 'CONSENT', 'YES+1');
   let pool: Item[] = [];
   let httpError: unknown;
-  try { pool = await viaHttp(keyword, session, config.poolSize, ctx.log); } catch (e) { httpError = e; }
+  try { pool = await viaHttp(keyword, session, config.poolSize, ctx.log, ctx.cancelled); } catch (e) { httpError = e; }
   if (pool.length < 20) {
     ctx.log(`youtube switching to browser (${httpError ? (httpError as Error).message : `only ${pool.length} results`})`);
     try {
-      const extra = await viaBrowser(keyword, config.poolSize);
+      const extra = await viaBrowser(keyword, config.poolSize, ctx.cancelled);
       const urls = new Set(pool.map((p) => p.url));
       pool.push(...extra.filter((e) => !urls.has(e.url)));
     } catch (e) {
@@ -184,7 +185,7 @@ export const youtube: Scraper = async (keyword, ctx) => {
   await Promise.all(Array.from({ length: Math.min(3, enrich.length) }, async () => {
     while (cursor < enrich.length) {
       // if the first pages all come back without numbers, YouTube is turning plain requests away: stop early
-      if (tried >= 6 && ok === 0) return;
+      if ((tried >= 6 && ok === 0) || ctx.cancelled()) return;
       const it = enrich[cursor++];
       try {
         const html = (await request(`${ORIGIN}/watch?v=${it.extra!.videoId}&hl=en`, { session, retries: 1 })).body;
@@ -199,6 +200,7 @@ export const youtube: Scraper = async (keyword, ctx) => {
   if (missing.length) {
     ctx.log(`youtube details: ${enrich.length - missing.length} by request, ${missing.length} via browser`);
     await capture({
+      cancelled: ctx.cancelled,
       url: `${ORIGIN}/results?${new URLSearchParams({ search_query: keyword, hl: 'en', gl: config.region })}`,
       match: () => false,
       enough: () => true,
@@ -210,6 +212,7 @@ export const youtube: Scraper = async (keyword, ctx) => {
           const raw = (await page.evaluate(WATCH_IN_PAGE(String(it.extra!.videoId))).catch(() => null)) as Raw | null;
           if (raw && applyDetails(it, fromRaw(raw))) failures = 0;
           else if (++failures >= 8) break;
+          if (ctx.cancelled()) break;
           await sleep(500 + Math.random() * 900);
         }
       },

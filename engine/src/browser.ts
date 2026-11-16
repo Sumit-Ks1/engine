@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { chromium, type BrowserContext, type Page } from 'playwright-core';
 import { config } from './config.js';
-import { ScrapeError } from './types.js';
+import { CancelledError, ScrapeError } from './types.js';
 import { sleep } from './util.js';
 
 /**
@@ -136,6 +136,8 @@ export interface CaptureOptions {
   debugName?: string;
   /** Page the visit appears to come from. */
   referer?: string;
+  /** Checked between steps; when it returns true the visit is abandoned. */
+  cancelled?: () => boolean;
 }
 
 export interface Captured { payloads: unknown[]; finalUrl: string; responses: string[] }
@@ -149,6 +151,7 @@ export function capture(opts: CaptureOptions): Promise<Captured> {
 }
 
 async function captureIn(c: BrowserContext, opts: CaptureOptions): Promise<Captured> {
+  if (opts.cancelled?.()) throw new CancelledError();
   const page: Page = await c.newPage();
   const payloads: unknown[] = [];
   const responses: string[] = [];
@@ -188,6 +191,7 @@ async function captureIn(c: BrowserContext, opts: CaptureOptions): Promise<Captu
     }
     let idle = 0;
     for (let i = 0; i < opts.maxScrolls && !opts.enough(payloads) && !limited; i++) {
+      if (opts.cancelled?.()) throw new CancelledError();
       const before = payloads.length;
       await page.mouse.move(rand(300, 900), rand(200, 600));
       await page.mouse.wheel(0, rand(1800, 3200));

@@ -149,6 +149,21 @@ export function removeKeyword(companyId: number, keywordId: number) {
   });
 }
 
+/** Removes several keywords from a company at once; `ids = null` removes every keyword of the company. */
+export function removeKeywords(companyId: number, ids: number[] | null): number {
+  return tx(() => {
+    let removed = 0;
+    if (ids === null) {
+      removed = Number(db.prepare(`DELETE FROM company_keywords WHERE company_id = ?`).run(companyId).changes);
+    } else {
+      const del = db.prepare(`DELETE FROM company_keywords WHERE company_id = ? AND keyword_id = ?`);
+      for (const id of ids) removed += Number(del.run(companyId, id).changes);
+    }
+    if (removed) dropOrphanKeywords();
+    return removed;
+  });
+}
+
 export function listKeywords(companyId: number, search: string, limit: number, offset: number) {
   const like = `%${search.toLowerCase().replace(/[\\%_]/g, '\\$&')}%`;
   const where = `FROM keywords k JOIN company_keywords ck ON ck.keyword_id = k.id WHERE ck.company_id = ? AND k.term_key LIKE ? ESCAPE '\\'`;

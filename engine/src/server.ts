@@ -80,6 +80,16 @@ app.post('/companies/:id/keywords', async (req, reply) => {
   return { ...result, duplicates: result.duplicates + (terms.length - invalid - clean.size), invalid };
 });
 
+app.post('/companies/:id/keywords/remove', async (req, reply) => {
+  const id = idOf((req.params as any).id);
+  if (!id || !store.getCompany(id)) return reply.code(404).send({ error: 'not found' });
+  const body = (req.body ?? {}) as { ids?: unknown; all?: unknown };
+  if (body.all === true) return { removed: store.removeKeywords(id, null) };
+  const ids = Array.isArray(body.ids) ? body.ids.map(idOf).filter((n): n is number => n !== null) : [];
+  if (!ids.length || ids.length > 5000) return reply.code(400).send({ error: 'Choose at least one keyword.' });
+  return { removed: store.removeKeywords(id, ids) };
+});
+
 app.delete('/companies/:id/keywords/:kid', async (req, reply) => {
   const id = idOf((req.params as any).id);
   const kid = idOf((req.params as any).kid);

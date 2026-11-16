@@ -57,6 +57,7 @@ export default function Dashboard({ companyId }: { companyId: string }) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<{ ok: boolean; msg: string } | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [picked, setPicked] = useState<Set<number>>(new Set());
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -101,6 +102,23 @@ export default function Dashboard({ companyId }: { companyId: string }) {
     report(await call(`${base}/upload`, { method: 'POST', body: form }));
     if (fileRef.current) fileRef.current.value = '';
   });
+  const toggle = (id: number) => setPicked((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  const allOnPage = rows.length > 0 && rows.every((k) => picked.has(k.id));
+  const togglePage = () => setPicked((prev) => {
+    const next = new Set(prev);
+    for (const k of rows) { if (allOnPage) next.delete(k.id); else next.add(k.id); }
+    return next;
+  });
+  const bulkRemove = (all: boolean) => {
+    const count = all ? total : picked.size;
+    const what = all ? `all ${count} keywords` : `${count} selected ${count === 1 ? 'keyword' : 'keywords'}`;
+    if (!count || !confirm(`Remove ${what} from ${company}? Their results are deleted and any collection still in progress for them stops.`)) return;
+    void run(async () => {
+      const r = await call(`${base}/remove`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(all ? { all: true } : { ids: [...picked] }) });
+      setPicked(new Set()); setPage(1);
+      setNote({ ok: true, msg: `${r.removed} ${r.removed === 1 ? 'keyword' : 'keywords'} removed` });
+    });
+  };
   const remove = (k: KeywordRow) => {
     if (confirm(`Remove "${k.term}" from ${company}?`)) void run(async () => { await call(`${base}/${k.id}`, { method: 'DELETE' }); });
   };
@@ -138,15 +156,19 @@ export default function Dashboard({ companyId }: { companyId: string }) {
       <section className="panel">
         <div className="toolbar">
           <input className="input" style={{ maxWidth: 320 }} placeholder="Search keywords" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
-          <span className="muted">{total} {total === 1 ? 'keyword' : 'keywords'}</span>
+          <span className="muted">{total} {total === 1 ? 'keyword' : 'keywords'}{picked.size ? ` · ${picked.size} selected` : ''}</span>
+          <div className="spacer" />
+          <button className="btn small danger" disabled={busy || !picked.size} onClick={() => bulkRemove(false)}>Remove selected{picked.size ? ` (${picked.size})` : ''}</button>
+          <button className="btn small danger" disabled={busy || !total || !!search} title={search ? 'Clear the search to remove all keywords' : undefined} onClick={() => bulkRemove(true)}>Remove all</button>
         </div>
         {rows.length ? (
           <div className="scroll">
             <table>
-              <thead><tr><th>Keyword</th><th>Results by platform</th><th /></tr></thead>
+              <thead><tr><th className="check"><input type="checkbox" aria-label="Select all keywords on this page" checked={allOnPage} onChange={togglePage} /></th><th>Keyword</th><th>Results by platform</th><th /></tr></thead>
               <tbody>
                 {rows.map((k) => (
                   <tr key={k.id}>
+                    <td className="check"><input type="checkbox" aria-label={`Select ${k.term}`} checked={picked.has(k.id)} onChange={() => toggle(k.id)} /></td>
                     <td><Link className="kw" href={`/k/${k.id}?c=${companyId}`}>#{k.term}</Link></td>
                     <td>
                       <div className="chips">

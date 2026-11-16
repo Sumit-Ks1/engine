@@ -4,7 +4,7 @@ import { config, PLATFORMS, type Platform } from './config.js';
 import * as lanes from './lanes.js';
 import { claimNext, completeJob, failJob, getKeyword, requeueStale, type Job } from './db.js';
 import { rank, scrapers } from './scrapers/index.js';
-import { ScrapeError } from './types.js';
+import { CancelledError, ScrapeError } from './types.js';
 
 const running = new Map<string, Platform>();
 let stopped = false;
@@ -19,13 +19,21 @@ async function run(job: Job) {
   const label = `[${job.platform}] "${kw.term}"`;
   const started = Date.now();
   lanes.started(job.platform);
+  // a removed keyword has no row any more: its queued jobs are gone, and work in progress stops at the next step
+  const cancelled = () => !getKeyword(job.keyword_id);
   try {
-    const items = await scrapers[job.platform](kw.term, { limit: config.resultLimit, log: (m) => log(`${label} ${m}`) });
+    const items = await scrapers[job.platform](kw.term, { limit: config.resultLimit, log: (m) => log(`${label} ${m}`), cancelled });
+    if (cancelled()) throw new CancelledError();
     const ranked = rank(items.filter((it) => /^https:\/\//.test(it.url)), config.resultLimit);
     completeJob(job, ranked);
     lanes.finished(job.platform);
     log(`${label} done: ${ranked.length} results in ${Date.now() - started}ms`);
   } catch (e) {
+    if (e instanceof CancelledError || cancelled()) {
+      lanes.finished(job.platform);
+      log(`${label} stopped: keyword was removed`);
+      return;
+    }
     const err = e instanceof ScrapeError ? e : new ScrapeError('parse', (e as Error).message || String(e));
     // a login wall will not go away by retrying; everything else gets backed-off retries
     const account = lanes.ACCOUNT_PLATFORMS.includes(job.platform);

@@ -115,6 +115,7 @@ export const reddit: Scraper = async (keyword, ctx) => {
   for (const t of WINDOWS) {
     const count = () => parseTiles(tiles).length;
     await capture({
+      cancelled: ctx.cancelled,
       url: `https://www.reddit.com/search/?${new URLSearchParams({ q: keyword, type: 'posts', sort: 'top', t })}`,
       referer: 'https://www.reddit.com/',
       match: () => false,

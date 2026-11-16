@@ -74,6 +74,7 @@ export const instagram: Scraper = async (keyword, ctx) => {
   for (const url of pages) {
     const before = tiles.size;
     const { payloads, finalUrl } = await capture({
+      cancelled: ctx.cancelled,
       url,
       match: (u) => u.startsWith(ORIGIN) && /\/(api\/v1|graphql)\//.test(u),
       enough: () => tiles.size >= config.poolSize,
@@ -93,6 +94,7 @@ export const instagram: Scraper = async (keyword, ctx) => {
         const missing = [...tiles.keys()].filter((c) => !hasNumbers(details.get(c))).slice(0, config.instagramEnrichTop);
         let failures = 0;
         for (const code of missing) {
+          if (ctx.cancelled()) break;
           const info: any = await page.evaluate(INFO(shortcodeToId(code))).catch(() => ({ __status: 0 }));
           if (info?.__status !== undefined) {
             if (info.__status === 429 || info.__status === 401 || ++failures >= 3) { ctx.log(`instagram detail lookups stopped (status ${info.__status})`); break; }

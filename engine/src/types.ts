@@ -28,6 +28,13 @@ export class ScrapeError extends Error {
 export interface ScrapeContext {
   limit: number;
   log: (msg: string) => void;
+  /** True once the keyword has been removed: stop working on it. */
+  cancelled: () => boolean;
+}
+
+/** Thrown to abandon a job whose keyword was removed while it was being collected. */
+export class CancelledError extends Error {
+  constructor() { super('keyword was removed'); this.name = 'CancelledError'; }
 }
 
 export type Scraper = (keyword: string, ctx: ScrapeContext) => Promise<Item[]>;

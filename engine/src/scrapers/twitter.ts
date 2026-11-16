@@ -48,6 +48,7 @@ export const twitter: Scraper = async (keyword, ctx) => {
   // "Top" is a short list X curates itself; "Latest" tops the pool up, and ranking by views happens afterwards
   for (const tab of ['top', 'live'] as const) {
     const { payloads } = await capture({
+      cancelled: ctx.cancelled,
       url: `https://x.com/search?${new URLSearchParams({ q: keyword, src: 'typed_query', f: tab })}`,
       match: (u) => u.includes('/SearchTimeline'),
       enough: (p) => parseTimeline([...all, ...p]).length >= config.poolSize,
