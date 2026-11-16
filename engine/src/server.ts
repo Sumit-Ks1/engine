@@ -73,7 +73,7 @@ app.post('/companies/:id/keywords', async (req, reply) => {
   let invalid = 0;
   for (const t of terms) {
     const k = normalizeKeyword(t);
-    if (k) clean.set(k.toLowerCase(), k); else invalid++;
+    if (k) clean.set(k, k); else invalid++;
   }
   const result = store.addKeywords(id, [...clean.values()]);
   queue.kick();

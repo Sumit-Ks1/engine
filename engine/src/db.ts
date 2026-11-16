@@ -80,6 +80,11 @@ const insKeyword = db.prepare(`INSERT INTO keywords (term, term_key, created_at)
 const insJob = db.prepare(`INSERT INTO jobs (keyword_id, platform, queued_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`);
 const insLink = db.prepare(`INSERT INTO company_keywords (company_id, keyword_id, position) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`);
 
+// keywords are case sensitive ("Wakefit" and "wakefit" are two keywords); older databases stored a lowercased key
+if (!db.prepare(`SELECT v FROM kv WHERE k = 'keywords_case_sensitive'`).get()) {
+  db.exec(`UPDATE keywords SET term_key = term; INSERT INTO kv (k, v) VALUES ('keywords_case_sensitive', '1');`);
+}
+
 // first run: create the starting company list; keywords from before companies existed go under "General"
 if (!db.prepare(`SELECT v FROM kv WHERE k = 'companies_seeded'`).get()) {
   tx(() => {
@@ -132,8 +137,8 @@ export function addKeywords(companyId: number, terms: string[]): { added: number
     let position = (db.prepare(`SELECT COALESCE(MAX(position), -1) AS p FROM company_keywords WHERE company_id = ?`).get(companyId) as { p: number }).p;
     const find = db.prepare(`SELECT id FROM keywords WHERE term_key = ?`);
     for (const term of terms) {
-      const r = insKeyword.run(term, term.toLowerCase(), now);
-      const keywordId = r.changes ? Number(r.lastInsertRowid) : (find.get(term.toLowerCase()) as { id: number }).id;
+      const r = insKeyword.run(term, term, now);
+      const keywordId = r.changes ? Number(r.lastInsertRowid) : (find.get(term) as { id: number }).id;
       if (r.changes) for (const p of PLATFORMS) insJob.run(keywordId, p, now);
       if (insLink.run(companyId, keywordId, ++position).changes) added++;
     }
@@ -165,8 +170,8 @@ export function removeKeywords(companyId: number, ids: number[] | null): number 
 }
 
 export function listKeywords(companyId: number, search: string, limit: number, offset: number) {
-  const like = `%${search.toLowerCase().replace(/[\\%_]/g, '\\$&')}%`;
-  const where = `FROM keywords k JOIN company_keywords ck ON ck.keyword_id = k.id WHERE ck.company_id = ? AND k.term_key LIKE ? ESCAPE '\\'`;
+  const like = `%${search.replace(/[\\%_]/g, '\\$&')}%`;
+  const where = `FROM keywords k JOIN company_keywords ck ON ck.keyword_id = k.id WHERE ck.company_id = ? AND k.term LIKE ? ESCAPE '\\'`;
   const total = (db.prepare(`SELECT COUNT(*) AS n ${where}`).get(companyId, like) as { n: number }).n;
   const rows = db.prepare(`SELECT k.id, k.term, k.created_at ${where} ORDER BY ck.position, k.id LIMIT ? OFFSET ?`).all(companyId, like, limit, offset) as unknown as Keyword[];
   const jobsFor = db.prepare(`SELECT platform, status, result_count, fetched_at, error_kind FROM jobs WHERE keyword_id = ?`);
