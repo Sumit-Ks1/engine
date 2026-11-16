@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { METRICS, PLATFORMS, type Accounts, type Item, type PlatformId, type PlatformState } from '@/lib/types';
 import { AccountNotices, dotClass, stateLabel } from './Dashboard';
 
@@ -25,6 +25,7 @@ export default function KeywordView({ id, initialPlatform, companyId }: { id: st
   const [data, setData] = useState<Detail | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [sort, setSort] = useState('rank');
 
   const load = useCallback(async () => {
     const res = await fetch(`/api/keywords/${id}?platform=${platform}`);
@@ -60,7 +61,7 @@ export default function KeywordView({ id, initialPlatform, companyId }: { id: st
       if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // stop spreadsheet apps treating scraped text as formulas
       return `"${s.replace(/"/g, '""')}"`;
     };
-    const lines = [cols.join(','), ...(data?.items ?? []).map((it, i) => cols.map((c) => esc(c === 'rank' ? i + 1 : c === 'signal' ? it.extra?.signal : it[c])).join(','))];
+    const lines = [cols.join(','), ...items.map((it, i) => cols.map((c) => esc(c === 'rank' ? i + 1 : c === 'signal' ? it.extra?.signal : it[c])).join(','))];
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv' }));
     a.download = `${data?.keyword.term ?? 'keyword'}-${platform}.csv`;
@@ -69,7 +70,23 @@ export default function KeywordView({ id, initialPlatform, companyId }: { id: st
   }
 
   const m = METRICS[platform];
-  const items = data?.items ?? [];
+  // sort choices follow the numbers this platform actually has; every choice is highest first
+  const sortOptions = useMemo(() => [
+    { id: 'rank', label: platform === 'google' ? 'Trending (default)' : 'Overall traction (default)' },
+    ...(['views', 'likes', 'comments', 'shares'] as const).filter((k) => m[k]).map((k) => ({ id: k, label: m[k]! })),
+    { id: 'publishedAt', label: 'Newest' },
+  ], [m, platform]);
+  const sortKey = sortOptions.some((o) => o.id === sort) ? sort : 'rank';
+  const items = useMemo(() => {
+    const list = data?.items ?? [];
+    if (sortKey === 'rank') return list;
+    const value = (it: Item) => {
+      const v = it[sortKey as 'views' | 'likes' | 'comments' | 'shares' | 'publishedAt'];
+      if (v === null || v === undefined) return -Infinity; // posts without this number go to the bottom
+      return typeof v === 'number' ? v : new Date(v).getTime() || -Infinity;
+    };
+    return [...list].sort((a, b) => value(b) - value(a));
+  }, [data?.items, sortKey]);
   const label = PLATFORMS.find((p) => p.id === platform)!.label;
   return (
     <div className="wrap">
@@ -95,6 +112,11 @@ export default function KeywordView({ id, initialPlatform, companyId }: { id: st
                   : state?.fetchedAt ? `${items.length} results · updated ${ago(state.fetchedAt)}` : state ? 'No results stored yet' : 'Loading…'}
               </span>
               <div className="spacer" />
+              <label className="sort">Sort by
+                <select className="input" value={sortKey} onChange={(e) => setSort(e.target.value)} disabled={!items.length}>
+                  {sortOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                </select>
+              </label>
               <button className="btn small" disabled={!items.length} onClick={exportCsv}>Export CSV</button>
               <button className="btn small" disabled={busy || working} onClick={refresh}>{working ? 'Refreshing…' : 'Refresh now'}</button>
             </div>

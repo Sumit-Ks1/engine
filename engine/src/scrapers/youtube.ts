@@ -2,7 +2,7 @@ import { capture } from '../browser.js';
 import { config } from '../config.js';
 import { request, Session } from '../http/client.js';
 import { ScrapeError, type Item, type Scraper } from '../types.js';
-import { extractJsonAfter, parseCount, relativeToIso, text, walk } from '../util.js';
+import { extractJsonAfter, parseCount, relativeToIso, sleep, text, walk } from '../util.js';
 
 const ORIGIN = 'https://www.youtube.com';
 
@@ -58,15 +58,42 @@ export function parseSearch(data: unknown): { items: Item[]; continuation: strin
   return { items, continuation };
 }
 
-/** Likes / comments are only present on the video page itself. */
-export function parseWatch(html: string): { likes: number | null; comments: number | null } {
-  const like = html.match(/"likeCount":"(\d+)"/) ?? html.match(/"accessibilityText":"([\d,.]+\s?[KMB]?) likes"/i)
-    ?? html.match(/like this video along with ([\d,]+) other/i);
-  const comment = html.match(/"commentCount":\{"simpleText":"([^"]+)"/)
-    ?? html.match(/"commentsEntryPointHeaderRenderer".{0,400}?"commentCount":\{"simpleText":"([^"]+)"/s)
-    ?? html.match(/"contextualInfo":\{"runs":\[\{"text":"([\d,.]+\s?[KMB]?)"\}\]\}/);
-  return { likes: like ? parseCount(like[1]) : null, comments: comment ? parseCount(comment[1]) : null };
+/** Where the video page carries its numbers; the same patterns run in Node and inside the browser. */
+const WATCH_PATTERNS = {
+  likes: [/"likeCount":"(\d+)"/, /"accessibilityText":"([\d,.]+\s?[KMB]?) likes"/i, /like this video along with ([\d,]+) other/i, /"defaultText":\{"accessibility":\{"accessibilityData":\{"label":"([\d,.]+\s?[KMB]?) likes"/i],
+  comments: [/"commentCount":\{"simpleText":"([^"]+)"/, /"contextualInfo":\{"runs":\[\{"text":"([\d,.]+\s?[KMB]?)"\}\]\}/, /"commentsEntryPointHeaderRenderer"[\s\S]{0,400}?"commentCount":\{"simpleText":"([^"]+)"/],
+  date: [/"publishDate":"([^"]+)"/, /"uploadDate":"([^"]+)"/, /itemprop="datePublished" content="([^"]+)"/, /"dateText":\{"simpleText":"([^"]+)"/],
+};
+type Raw = { likes: string | null; comments: string | null; date: string | null };
+const firstMatch = (html: string, res: RegExp[]) => { for (const re of res) { const m = html.match(re); if (m) return m[1]; } return null; };
+
+function fromRaw(raw: Raw): { likes: number | null; comments: number | null; publishedAt: string | null } {
+  let publishedAt: string | null = null;
+  if (raw.date) {
+    const d = new Date(raw.date.replace(/^(Premiered|Streamed live on|Published on)\s+/i, ''));
+    publishedAt = Number.isNaN(d.getTime()) ? relativeToIso(raw.date) : d.toISOString();
+  }
+  return { likes: raw.likes ? parseCount(raw.likes) : null, comments: raw.comments ? parseCount(raw.comments) : null, publishedAt };
 }
+
+/** Likes, comments and the upload date are only present on the video page itself. */
+export function parseWatch(html: string) {
+  return fromRaw({ likes: firstMatch(html, WATCH_PATTERNS.likes), comments: firstMatch(html, WATCH_PATTERNS.comments), date: firstMatch(html, WATCH_PATTERNS.date) });
+}
+
+/** Loads a video page from inside the browser and returns only the three raw values (runs in the page). */
+export const WATCH_IN_PAGE = (id: string) => `fetch('/watch?v=${id}&hl=en', { credentials: 'include' }).then((r) => r.text()).then((html) => {
+  const P = ${JSON.stringify(Object.fromEntries(Object.entries(WATCH_PATTERNS).map(([k, v]) => [k, v.map((re) => [re.source, re.flags])])))};
+  const first = (list) => { for (const [src, flags] of list) { const m = html.match(new RegExp(src, flags)); if (m) return m[1]; } return null; };
+  return { likes: first(P.likes), comments: first(P.comments), date: first(P.date) };
+}).catch(() => null)`;
+
+const applyDetails = (it: Item, d: ReturnType<typeof fromRaw>) => {
+  if (d.likes !== null) it.likes = d.likes;
+  if (d.comments !== null) it.comments = d.comments;
+  if (d.publishedAt) it.publishedAt = d.publishedAt;
+  return d.likes !== null || d.publishedAt !== null;
+};
 
 async function viaHttp(keyword: string, session: Session, want: number, log: (m: string) => void): Promise<Item[]> {
   const seen = new Map<string, Item>();
@@ -149,15 +176,44 @@ export const youtube: Scraper = async (keyword, ctx) => {
 
   const top = pool.sort((a, b) => (b.views ?? 0) - (a.views ?? 0)).slice(0, ctx.limit);
   const enrich = top.slice(0, config.youtubeEnrichTop);
+
+  // 1) plain requests for each video page
   let cursor = 0;
+  let ok = 0;
+  let tried = 0;
   await Promise.all(Array.from({ length: Math.min(3, enrich.length) }, async () => {
     while (cursor < enrich.length) {
+      // if the first pages all come back without numbers, YouTube is turning plain requests away: stop early
+      if (tried >= 6 && ok === 0) return;
       const it = enrich[cursor++];
       try {
         const html = (await request(`${ORIGIN}/watch?v=${it.extra!.videoId}&hl=en`, { session, retries: 1 })).body;
-        Object.assign(it, parseWatch(html));
-      } catch { /* metrics stay empty for this video */ }
+        if (applyDetails(it, parseWatch(html))) ok++;
+      } catch { /* picked up by the browser pass below */ }
+      tried++;
     }
   }));
+
+  // 2) whatever is still missing is loaded from inside the real browser
+  const missing = enrich.filter((it) => it.likes == null && !it.publishedAt);
+  if (missing.length) {
+    ctx.log(`youtube details: ${enrich.length - missing.length} by request, ${missing.length} via browser`);
+    await capture({
+      url: `${ORIGIN}/results?${new URLSearchParams({ search_query: keyword, hl: 'en', gl: config.region })}`,
+      match: () => false,
+      enough: () => true,
+      maxScrolls: 0,
+      onPage: async (page, phase) => {
+        if (phase !== 'loaded') return;
+        let failures = 0;
+        for (const it of missing) {
+          const raw = (await page.evaluate(WATCH_IN_PAGE(String(it.extra!.videoId))).catch(() => null)) as Raw | null;
+          if (raw && applyDetails(it, fromRaw(raw))) failures = 0;
+          else if (++failures >= 8) break;
+          await sleep(500 + Math.random() * 900);
+        }
+      },
+    }).catch((e: Error) => ctx.log(`youtube browser details unavailable: ${e.message}`));
+  }
   return top;
 };

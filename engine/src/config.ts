@@ -29,13 +29,8 @@ export const config = {
   concurrency: int('CONCURRENCY', 4),
   perPlatformConcurrency: int('PER_PLATFORM_CONCURRENCY', 1),
   maxAttempts: int('MAX_ATTEMPTS', 3),
-  refreshHours: int('REFRESH_HOURS', 12),
-  /** Signed-in platforms are paced slowly, so Instagram refreshes less often. */
-  refreshHoursFor: {
-    instagram: int('REFRESH_HOURS_INSTAGRAM', 48),
-    twitter: int('REFRESH_HOURS_TWITTER', 24),
-    reddit: int('REFRESH_HOURS_REDDIT', 24),
-  } as Partial<Record<Platform, number>>,
+  /** Hours between automatic re-collections. 0 (default) = never: results change only when someone clicks Refresh. */
+  refreshHours: int('AUTO_REFRESH_HOURS', 0),
   /** Seconds between two keywords on a signed-in platform (randomised +-40%). */
   accountGapSeconds: {
     instagram: int('GAP_SECONDS_INSTAGRAM', 60),
@@ -72,7 +67,7 @@ export const config = {
   region: (env.REGION || 'IN').toUpperCase(),
   lang: (env.LANG_CODE || 'en').toLowerCase(),
   /** How many top YouTube videos get an extra page fetch for likes/comments. */
-  youtubeEnrichTop: int('YOUTUBE_ENRICH_TOP', 30),
+  youtubeEnrichTop: int('YOUTUBE_ENRICH_TOP', 100),
   /** How many Instagram posts per keyword get an extra lookup when the results grid carries no numbers. */
   instagramEnrichTop: int('INSTAGRAM_ENRICH_TOP', 40),
   /** Rotating egress: plain proxies and/or AWS API Gateway endpoints per host. */

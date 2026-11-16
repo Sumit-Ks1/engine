@@ -57,8 +57,9 @@ export function startQueue(logger: (msg: string) => void) {
   const timers = [
     setInterval(pump, 2000),
     setInterval(() => {
+      if (config.refreshHours <= 0) return; // automatic refresh is off unless explicitly enabled
       for (const p of PLATFORMS) {
-        const n = requeueStale(p, Date.now() - (config.refreshHoursFor[p] ?? config.refreshHours) * 36e5);
+        const n = requeueStale(p, Date.now() - config.refreshHours * 36e5);
         if (n) log(`scheduler: re-queued ${n} stale ${p} jobs`);
       }
     }, 60_000),

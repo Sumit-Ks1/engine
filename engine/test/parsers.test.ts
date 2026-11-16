@@ -53,7 +53,9 @@ test('youtube search params + parsing', () => {
   assert.equal(items.length, 2);
   assert.deepEqual([items[0].url, items[0].views, items[0].author, items[0].thumbnail, items[0].type], ['https://www.youtube.com/watch?v=abc123', 12345678, 'Chan', 'l.jpg', 'video']);
   assert.deepEqual([items[1].url, items[1].views, items[1].type], ['https://www.youtube.com/shorts/sh1', 4500000, 'short']);
-  assert.deepEqual(parseWatch('..."likeCount":"98765"... "commentCount":{"simpleText":"1.2K"}'), { likes: 98765, comments: 1200 });
+  assert.deepEqual(parseWatch('..."likeCount":"98765"... "commentCount":{"simpleText":"1.2K"} "publishDate":"2026-03-04T05:00:00-08:00"'), { likes: 98765, comments: 1200, publishedAt: '2026-03-04T13:00:00.000Z' });
+  assert.deepEqual(parseWatch('"dateText":{"simpleText":"Premiered Mar 4, 2026"}').publishedAt?.slice(0, 4), '2026');
+  assert.deepEqual(parseWatch('nothing here'), { likes: null, comments: null, publishedAt: null });
 });
 
 test('reddit listing', () => {

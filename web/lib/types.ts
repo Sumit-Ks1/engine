@@ -27,7 +27,7 @@ export const METRICS: Record<PlatformId, { views: string | null; likes: string |
   youtube: { views: 'Views', likes: 'Likes', comments: 'Comments', shares: null },
   instagram: { views: 'Plays', likes: 'Likes', comments: 'Comments', shares: 'Shares' },
   twitter: { views: 'Views', likes: 'Likes', comments: 'Replies', shares: 'Reposts' },
-  reddit: { views: null, likes: 'Upvotes', comments: 'Comments', shares: 'Crossposts' },
+  reddit: { views: null, likes: 'Upvotes', comments: 'Comments', shares: null },
   pinterest: { views: null, likes: 'Reactions', comments: 'Comments', shares: 'Saves' },
   google: { views: null, likes: null, comments: null, shares: null },
 };

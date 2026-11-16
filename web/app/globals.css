@@ -79,3 +79,5 @@ h1 { font-size: 22px; margin: 0 0 14px; letter-spacing: -0.01em; }
 .bar { height: 5px; border-radius: 3px; background: var(--chip); margin: 12px 0 5px; overflow: hidden; }
 .bar span { display: block; height: 100%; background: var(--ok); border-radius: 3px; }
 @media (hover: none) { .card-x { opacity: 1; } }
+.sort { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+.sort .input { flex: none; min-width: 0; padding: 5px 8px; font-size: 13px; color: var(--text); }

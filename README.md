@@ -47,7 +47,10 @@ made for this purpose, not personal ones, and run the engine on the same network
 - Adding a keyword queues one job per platform. Each job gathers a pool of up to `POOL_SIZE`
   (300) candidates, ranks them by traction (views + weighted likes / comments / shares) and
   keeps the top `RESULT_LIMIT` (100).
-- A failed or empty run never overwrites results already cached. "Refresh now" jumps the queue.
+- Results are collected once. They change only when someone clicks "Refresh now" (which jumps
+  the queue) or re-adds the keyword. Set `AUTO_REFRESH_HOURS` to re-collect on a schedule instead.
+- A failed or empty run never overwrites results already cached.
+- Each platform's results can be sorted by any of its numbers (views, likes, comments, ...) or by newest.
 - Failures are listed in the dashboard and in `engine/data/errors.log`. When a signed-in
   platform returns very little, a screenshot of what the browser saw is saved in `engine/data/debug/`.
 
@@ -63,7 +66,7 @@ Two lanes:
   rotating egress below. YouTube falls back to the browser if requests are turned away.
 
 At the default pace Instagram handles roughly one keyword a minute, so 600 keywords take
-about 10 hours; that is why it refreshes every 48 hours.
+about 10 hours.
 
 ## Rotating IPs on AWS (anonymous lane only)
 
@@ -80,7 +83,7 @@ Signed-in platforms deliberately ignore this: an account that hops between addre
 
 | Platform  | Source                                                  | Numbers                                    |
 |-----------|---------------------------------------------------------|--------------------------------------------|
-| YouTube   | Search sorted by view count (month, year, all time)     | Views; likes/comments for the top `YOUTUBE_ENRICH_TOP` |
+| YouTube   | Search sorted by view count (month, year, all time)     | Views; likes, comments and upload date for the top `YOUTUBE_ENRICH_TOP` |
 | Instagram | Signed-in keyword search grid, then `#tag` search       | Plays, likes, comments (looked up for the top `INSTAGRAM_ENRICH_TOP`) |
 | X         | Signed-in "Top" search, topped up from "Latest"         | Views, likes, replies, reposts; ads tagged |
 | Reddit    | Signed-in search page, top of week / month / year (or Reddit's API if `REDDIT_CLIENT_ID` is set) | Upvotes, comments |
