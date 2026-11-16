@@ -144,6 +144,19 @@ app.put('/companies/:id/handles', async (req, reply) => {
   if (!id || !store.getCompany(id)) return reply.code(404).send({ error: 'not found' });
   const body = (req.body ?? {}) as Record<string, unknown>;
   const invalid: string[] = [];
+  if ('website' in body) {
+    const raw = String(body.website ?? '').trim();
+    let site = '';
+    if (raw) {
+      try {
+        const u = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+        // only ordinary public web addresses: the engine's browser will open this
+        if (!/^https?:$/.test(u.protocol) || !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(u.hostname) || /^\d+(\.\d+){3}$/.test(u.hostname) || /(^|\.)(localhost|local|internal)$/i.test(u.hostname)) throw new Error('bad');
+        site = `${u.protocol}//${u.hostname}${u.pathname}`;
+      } catch { invalid.push('website'); }
+    }
+    if (!invalid.length) store.setWebsite(id, site);
+  }
   for (const platform of PROFILE_PLATFORMS) {
     if (!(platform in body)) continue;
     const raw = String(body[platform] ?? '').trim();
@@ -157,12 +170,14 @@ app.put('/companies/:id/handles', async (req, reply) => {
 
 app.post('/insights/run', async (req) => {
   const companyId = idOf((req.body as any)?.companyId);
+  // companies still missing a handle get their website read first; what is found is queued automatically
+  const lookups = store.queueLookups(companyId, PROFILE_PLATFORMS.length);
   const queued = store.queueProfiles(companyId);
   queue.kick();
-  return { queued };
+  return { queued, lookups };
 });
 
-app.post('/insights/stop', async () => ({ stopped: store.cancelProfiles() }));
+app.post('/insights/stop', async () => ({ stopped: store.cancelProfiles() + store.cancelLookups() }));
 
 app.get('/insights/posts', async (req) => {
   const q = req.query as Record<string, string>;

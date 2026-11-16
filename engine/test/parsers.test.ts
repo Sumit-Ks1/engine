@@ -166,3 +166,18 @@ test('brand handles: normalising and classifying', async () => {
   assert.equal(classify({ ...post, views: 5e6 }, 'youtube').category, 'organic', 'no like count means no estimate');
   assert.deepEqual([classify({ ...post, extra: { format: 'short' } }, 'instagram').format, classify({ ...post, type: 'post' }, 'twitter').format], ['short', 'text']);
 });
+
+test('official handles are read from a brand website, ignoring share buttons', async () => {
+  const { extractHandles } = await import('../src/scrapers/profiles.js');
+  const html = `
+    <a href="https://www.instagram.com/p/Cabc123/">post</a>
+    <a href="https://www.facebook.com/sharer/sharer.php?u=x">share</a>
+    <a href="https://twitter.com/intent/tweet?text=hi">tweet this</a>
+    <a href="https://www.youtube.com/watch?v=abc">watch</a>
+    <footer><a href="https://www.instagram.com/wakefitco/?hl=en"></a><a href="https://www.youtube.com/@Wakefit"></a><a href="https://x.com/WakefitCo"></a></footer>
+    <script type="application/ld+json">{"sameAs":["https:\\/\\/www.instagram.com\\/wakefitco","https:\\/\\/twitter.com\\/WakefitCo","https://www.youtube.com/channel/UCxyz_123"]}</script>
+    <a href="https://www.instagram.com/someoneelse/">creator</a>`;
+  assert.deepEqual(extractHandles(html), { youtube: '@Wakefit', instagram: 'wakefitco', twitter: 'WakefitCo' });
+  assert.deepEqual(extractHandles('<a href="https://www.youtube.com/c/BrandTV">y</a>'), { youtube: 'c/BrandTV' });
+  assert.deepEqual(extractHandles('<p>no links here</p>'), {});
+});

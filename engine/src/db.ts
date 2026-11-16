@@ -103,6 +103,18 @@ const insKeyword = db.prepare(`INSERT INTO keywords (term, term_key, created_at)
 const insJob = db.prepare(`INSERT INTO jobs (keyword_id, platform, queued_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`);
 const insLink = db.prepare(`INSERT INTO company_keywords (company_id, keyword_id, position) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`);
 
+// brand analysis: each company's own website (where its official accounts are read from) and the lookup state
+{
+  const cols = (table: string) => (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+  if (!cols('companies').includes('website')) {
+    db.exec(`ALTER TABLE companies ADD COLUMN website TEXT NOT NULL DEFAULT '';
+             ALTER TABLE companies ADD COLUMN lookup_state TEXT NOT NULL DEFAULT '';
+             ALTER TABLE companies ADD COLUMN lookup_note TEXT NOT NULL DEFAULT '';`);
+  }
+  if (!cols('handles').includes('source')) db.exec(`ALTER TABLE handles ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'`);
+  db.prepare(`UPDATE companies SET lookup_state = 'queued' WHERE lookup_state = 'running'`).run();
+}
+
 // which platforms a company wants for a keyword ('' = all six)
 if (!(db.prepare(`PRAGMA table_info(company_keywords)`).all() as { name: string }[]).some((c) => c.name === 'platforms')) {
   db.exec(`ALTER TABLE company_keywords ADD COLUMN platforms TEXT NOT NULL DEFAULT ''`);
@@ -130,10 +142,23 @@ if (!db.prepare(`SELECT v FROM kv WHERE k = 'companies_seeded'`).get()) {
   });
 }
 
+// websites of the starting companies; filled in once, editable afterwards
+const DEFAULT_WEBSITES: Record<string, string> = {
+  'flo mattress': 'https://www.flomattress.com/', 'the sleep company': 'https://thesleepcompany.in/', sleepyhead: 'https://mysleepyhead.com/',
+  wakefit: 'https://www.wakefit.co/', duroflex: 'https://www.duroflexworld.com/', sleepycat: 'https://sleepycat.in/', sunday: 'https://sundayrest.com/',
+  peps: 'https://pepsindia.com/', springfit: 'https://www.springfit.com/', 'century mattress': 'https://www.centuryindia.com/',
+  sleepwell: 'https://mysleepwell.com/', kurlon: 'https://www.kurlon.com/',
+};
+if (!db.prepare(`SELECT v FROM kv WHERE k = 'websites_seeded'`).get()) {
+  const set = db.prepare(`UPDATE companies SET website = ? WHERE name_key = ? AND website = ''`);
+  for (const [key, site] of Object.entries(DEFAULT_WEBSITES)) set.run(site, key);
+  db.prepare(`INSERT INTO kv (k, v) VALUES ('websites_seeded', '1')`).run();
+}
+
 export interface Company { id: number; name: string; created_at: number }
 
 export function listCompanies() {
-  const companies = db.prepare(`SELECT id, name, created_at FROM companies ORDER BY id`).all() as unknown as Company[];
+  const companies = db.prepare(`SELECT id, name, created_at, website, lookup_state, lookup_note FROM companies ORDER BY id`).all() as unknown as (Company & { website: string; lookup_state: string; lookup_note: string })[];
   const rows = db.prepare(`
     SELECT ck.company_id, ck.keyword_id, ck.platforms, j.platform, j.status
     FROM company_keywords ck LEFT JOIN jobs j ON j.keyword_id = ck.keyword_id`).all() as { company_id: number; keyword_id: number; platforms: string; platform: Platform | null; status: string }[];
@@ -349,12 +374,12 @@ export interface HandleRow {
 export const listHandles = () => db.prepare(`SELECT * FROM handles ORDER BY company_id, platform`).all() as unknown as HandleRow[];
 
 /** Sets (or, with an empty value, clears) a company's handle on a platform. A changed handle drops the old posts. */
-export function setHandle(companyId: number, platform: Platform, handle: string | null) {
+export function setHandle(companyId: number, platform: Platform, handle: string | null, source: 'manual' | 'auto' = 'manual') {
   tx(() => {
     const cur = db.prepare(`SELECT handle FROM handles WHERE company_id = ? AND platform = ?`).get(companyId, platform) as { handle: string } | undefined;
     if (cur?.handle === handle) return;
     db.prepare(`DELETE FROM handles WHERE company_id = ? AND platform = ?`).run(companyId, platform);
-    if (handle) db.prepare(`INSERT INTO handles (company_id, platform, handle) VALUES (?, ?, ?)`).run(companyId, platform, handle);
+    if (handle) db.prepare(`INSERT INTO handles (company_id, platform, handle, source) VALUES (?, ?, ?, ?)`).run(companyId, platform, handle, source);
   });
 }
 
@@ -401,4 +426,34 @@ export function profilePosts(companyId: number | null, platform: Platform | null
   const rows = db.prepare(`SELECT company_id, platform, data FROM profile_posts WHERE (? IS NULL OR company_id = ?) AND (? IS NULL OR platform = ?) AND published_at >= ?`)
     .all(companyId, companyId, platform, platform, since) as { company_id: number; platform: Platform; data: string }[];
   return rows.map((r) => ({ companyId: r.company_id, platform: r.platform, ...(JSON.parse(r.data) as Item & { format: string; category: string }) }));
+}
+
+export function setWebsite(companyId: number, website: string) {
+  db.prepare(`UPDATE companies SET website = ?, lookup_state = '', lookup_note = '' WHERE id = ? AND website != ?`).run(website, companyId, website);
+}
+
+/** Queues a website lookup for companies that have a website but are missing a handle on some platform. */
+export function queueLookups(companyId: number | null, platformCount: number) {
+  return Number(db.prepare(
+    `UPDATE companies SET lookup_state = 'queued' WHERE website != '' AND lookup_state != 'running' AND (? IS NULL OR id = ?)
+       AND (SELECT COUNT(*) FROM handles h WHERE h.company_id = companies.id) < ?`,
+  ).run(companyId, companyId, platformCount).changes);
+}
+
+export function claimNextLookup(): { id: number; name: string; website: string } | undefined {
+  return tx(() => {
+    const row = db.prepare(`SELECT id, name, website FROM companies WHERE lookup_state = 'queued' ORDER BY id LIMIT 1`).get() as { id: number; name: string; website: string } | undefined;
+    if (row) db.prepare(`UPDATE companies SET lookup_state = 'running' WHERE id = ?`).run(row.id);
+    return row;
+  });
+}
+
+export function finishLookup(companyId: number, state: 'done' | 'failed', note: string) {
+  db.prepare(`UPDATE companies SET lookup_state = ?, lookup_note = ? WHERE id = ?`).run(state, note.slice(0, 300), companyId);
+}
+
+export const hasHandle = (companyId: number, platform: Platform) => !!db.prepare(`SELECT 1 FROM handles WHERE company_id = ? AND platform = ?`).get(companyId, platform);
+
+export function cancelLookups() {
+  return Number(db.prepare(`UPDATE companies SET lookup_state = '' WHERE lookup_state = 'queued'`).run().changes);
 }

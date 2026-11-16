@@ -16,9 +16,10 @@ export function useSummary() {
     } catch (e) { setError((e as Error).message); }
   }, []);
   const states = (data?.companies ?? []).flatMap((c) => Object.values(c.handles));
-  const working = states.filter((h) => h!.status === 'queued' || h!.status === 'running').length;
+  const lookups = (data?.companies ?? []).filter((c) => c.lookup?.state === 'queued' || c.lookup?.state === 'running').length;
+  const working = states.filter((h) => h!.status === 'queued' || h!.status === 'running').length + lookups;
   useEffect(() => { void load(); const t = setInterval(load, working ? 4000 : 30000); return () => clearInterval(t); }, [load, working]);
   // a version number that changes whenever a handle finishes, so post lists reload
   const version = states.reduce((n, h) => n + (h!.fetchedAt ?? 0) % 1e6, 0);
-  return { data, error, load, working, total: states.length, version };
+  return { data, error, load, working, lookups, total: states.length, version };
 }

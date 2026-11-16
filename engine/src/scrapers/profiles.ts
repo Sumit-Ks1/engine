@@ -37,6 +37,59 @@ export function normalizeHandle(platform: ProfilePlatform, raw: unknown): string
   return (platform === 'instagram' ? /^[A-Za-z0-9._]{1,30}$/ : /^[A-Za-z0-9_]{1,15}$/).test(h) ? h : null;
 }
 
+const SKIP: Record<ProfilePlatform, RegExp> = {
+  // links that are posts, share buttons or site sections rather than an account
+  instagram: /^(p|reel|reels|tv|explore|accounts|share|sharer|stories|direct|about|developer|legal)$/i,
+  youtube: /^(watch|embed|playlist|results|shorts|share|feed|hashtag|live|t|about|premium|gaming|music|redirect)$/i,
+  twitter: /^(intent|share|home|hashtag|search|i|login|signup|explore|privacy|tos|settings)$/i,
+};
+
+/**
+ * Finds a brand's own account links in the HTML of its website (footer icons, "follow us"
+ * links, structured data). The handle linked most often wins; share buttons are ignored.
+ */
+export function extractHandles(html: string): Partial<Record<ProfilePlatform, string>> {
+  const counts: Record<ProfilePlatform, Map<string, { handle: string; n: number }>> = { youtube: new Map(), instagram: new Map(), twitter: new Map() };
+  const text = html.replace(/\\\//g, '/').replace(/&amp;/g, '&');
+  for (const m of text.matchAll(/https?:\/\/(?:www\.|m\.|mobile\.)?(instagram\.com|youtube\.com|twitter\.com|x\.com)\/([^"'\s<>\\)]+)/gi)) {
+    const platform: ProfilePlatform = /instagram/i.test(m[1]) ? 'instagram' : /youtube/i.test(m[1]) ? 'youtube' : 'twitter';
+    const path = m[2].split(/[?#]/)[0];
+    const first = path.split('/')[0];
+    if (!first || SKIP[platform].test(first)) continue;
+    const handle = normalizeHandle(platform, path);
+    if (!handle) continue;
+    const key = handle.toLowerCase();
+    const cur = counts[platform].get(key) ?? { handle, n: 0 };
+    cur.n++;
+    counts[platform].set(key, cur);
+  }
+  const out: Partial<Record<ProfilePlatform, string>> = {};
+  for (const p of PROFILE_PLATFORMS) {
+    const best = [...counts[p].values()].sort((a, b) => b.n - a.n)[0];
+    if (best) out[p] = best.handle;
+  }
+  return out;
+}
+
+/** Opens a brand's website in the browser and reads its official account links. */
+export async function discoverHandles(website: string, ctx: { cancelled: () => boolean }): Promise<Partial<Record<ProfilePlatform, string>>> {
+  let found: Partial<Record<ProfilePlatform, string>> = {};
+  await capture({
+    cancelled: ctx.cancelled,
+    url: website,
+    match: () => false,
+    enough: () => false,
+    maxScrolls: 3,
+    onPage: async (page, phase) => {
+      if (phase === 'loaded') await page.evaluate('window.scrollTo(0, document.body.scrollHeight)').catch(() => undefined); // footers often load late
+      if (phase !== 'done') return;
+      const html = (await page.evaluate('document.documentElement.outerHTML').catch(() => '')) as string;
+      found = extractHandles(html);
+    },
+  });
+  return found;
+}
+
 export const profileUrl = (platform: ProfilePlatform, handle: string) =>
   platform === 'youtube' ? `https://www.youtube.com/${handle}` : platform === 'instagram' ? `https://www.instagram.com/${handle}/` : `https://x.com/${handle}`;
 

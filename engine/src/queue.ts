@@ -2,9 +2,9 @@ import { appendFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { config, PLATFORMS, type Platform } from './config.js';
 import * as lanes from './lanes.js';
-import { claimNext, claimNextProfile, completeJob, completeProfile, failJob, failProfile, getCompany, getKeyword, handleIs, jobExists, requeueStale, type HandleRow, type Job } from './db.js';
+import { claimNextLookup, finishLookup, hasHandle, queueProfiles, setHandle, claimNext, claimNextProfile, completeJob, completeProfile, failJob, failProfile, getCompany, getKeyword, handleIs, jobExists, requeueStale, type HandleRow, type Job } from './db.js';
 import { windowStart } from './insights.js';
-import { classify, demoProfile, profileScrapers, type ProfilePlatform } from './scrapers/profiles.js';
+import { PROFILE_PLATFORMS, classify, demoProfile, discoverHandles, profileScrapers, type ProfilePlatform } from './scrapers/profiles.js';
 import { rank, scrapers } from './scrapers/index.js';
 import { CancelledError, ScrapeError } from './types.js';
 
@@ -74,8 +74,43 @@ async function runProfile(row: HandleRow) {
   }
 }
 
+const LABELS: Record<ProfilePlatform, string> = { youtube: 'YouTube', instagram: 'Instagram', twitter: 'X' };
+let lookupRunning = false;
+
+/** Reads a company's official accounts off its own website, then queues them for collection. */
+async function runLookup(c: { id: number; name: string; website: string }) {
+  const label = `[handles] ${c.name} (${c.website})`;
+  try {
+    const found = config.demoMode
+      ? Object.fromEntries(PROFILE_PLATFORMS.map((p) => [p, p === 'youtube' ? `@sample${c.id}` : `sample${c.id}`]))
+      : await discoverHandles(c.website, { cancelled: () => !getCompany(c.id) });
+    const added: string[] = [];
+    const missing: string[] = [];
+    for (const p of PROFILE_PLATFORMS) {
+      if (hasHandle(c.id, p)) continue; // a handle that is already saved is never replaced
+      const handle = (found as Partial<Record<ProfilePlatform, string>>)[p];
+      if (handle) { setHandle(c.id, p, handle, 'auto'); added.push(`${LABELS[p]} ${handle}`); } else missing.push(LABELS[p]);
+    }
+    if (added.length) queueProfiles(c.id);
+    finishLookup(c.id, 'done', [added.length ? `Found on the website: ${added.join(', ')}.` : '', missing.length ? `No ${missing.join(' or ')} link on the website.` : ''].filter(Boolean).join(' '));
+    log(`${label} found: ${added.join(', ') || 'nothing new'}${missing.length ? ` | not linked: ${missing.join(', ')}` : ''}`);
+  } catch (e) {
+    if (e instanceof CancelledError) return;
+    finishLookup(c.id, 'failed', `The website could not be read: ${(e as Error).message}`);
+    log(`${label} failed: ${(e as Error).message}`);
+    recordError(`${label} ${(e as Error).message}`);
+  }
+}
+
 function pump() {
   if (stopped) return;
+  if (!lookupRunning) {
+    const lookup = claimNextLookup();
+    if (lookup) {
+      lookupRunning = true;
+      void runLookup(lookup).finally(() => { lookupRunning = false; pump(); });
+    }
+  }
   while (running.size < config.concurrency) {
     const counts = new Map<Platform, number>();
     for (const p of running.values()) counts.set(p, (counts.get(p) ?? 0) + 1);

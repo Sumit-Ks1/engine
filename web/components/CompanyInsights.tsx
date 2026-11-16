@@ -40,7 +40,7 @@ export default function CompanyInsights({ id }: { id: number }) {
         <Link className="btn small" href="/insights">← Brand analysis</Link>
         <div className="brand">{company?.name ?? '…'}</div>
         <div className="spacer" />
-        <button className="btn primary" disabled={busy || !handles.length || collecting || working > 0} onClick={run}>{collecting ? 'Collecting…' : 'Collect this company now'}</button>
+        <button className="btn primary" disabled={busy || (!handles.length && !company?.website) || collecting || working > 0} onClick={run}>{collecting ? 'Collecting…' : 'Collect this company now'}</button>
       </header>
       {error && <p className="note bad">{error}</p>}
       {data?.demo && <div className="banner">Sample-data mode is on. Everything shown is generated placeholder data, not real accounts.</div>}
@@ -52,13 +52,13 @@ export default function CompanyInsights({ id }: { id: number }) {
             return <a key={p.id} className="chip" href={h.url} target="_blank" rel="noopener noreferrer" title={h.error ?? undefined}>
               <span className={`dot ${h.status === 'idle' || h.status === 'queued' ? '' : h.status}`} />{p.label} <b>{h.handle}</b>{h.followers ? ` · ${compact(h.followers)} followers` : ''}{h.status === 'failed' ? ' · failed' : ''} ↗
             </a>;
-          }) : <span className="muted">No official handles saved for this company. Add them on the Brand analysis page.</span>}
+          }) : <span className="muted">No official accounts found for this company yet. Press Collect this company now, or add them on the Brand analysis page.</span>}
         </div>
       )}
       {company && handles.filter((p) => company.handles[p.id]!.status === 'failed').map((p) => <p key={p.id} className="note bad" style={{ marginBottom: 12 }}>{p.label}: {company.handles[p.id]!.error}</p>)}
 
       {data && !rows.length && !platform ? (
-        <div className="panel empty"><h3>No data collected for this company yet</h3><p>{handles.length ? 'Press Collect this company now.' : 'Save its handles first.'}</p></div>
+        <div className="panel empty"><h3>No data collected for this company yet</h3><p>Press Collect this company now.</p></div>
       ) : data && (
         <>
           <div className="filters">

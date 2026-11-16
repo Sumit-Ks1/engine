@@ -40,11 +40,13 @@ export function summary() {
     companies: store.listCompanies().map((c) => ({
       id: c.id,
       name: c.name,
+      website: c.website,
+      lookup: { state: c.lookup_state, note: c.lookup_note },
       handles: Object.fromEntries(handles.filter((h) => h.company_id === c.id).map((h) => {
         let meta: { name?: string; followers?: number | null } = {};
         try { meta = JSON.parse(h.meta); } catch { /* keep empty */ }
         return [h.platform, {
-          handle: h.handle, url: profileUrl(h.platform as ProfilePlatform, h.handle), status: h.status,
+          handle: h.handle, source: (h as { source?: string }).source ?? 'manual', url: profileUrl(h.platform as ProfilePlatform, h.handle), status: h.status,
           fetchedAt: h.fetched_at, error: h.error, errorKind: h.error_kind, followers: meta.followers ?? null, name: meta.name ?? null,
         }];
       })),

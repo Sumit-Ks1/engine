@@ -3,8 +3,8 @@ export const PROFILE_PLATFORMS: { id: ProfilePlatform; label: string }[] = [
   { id: 'youtube', label: 'YouTube' }, { id: 'instagram', label: 'Instagram' }, { id: 'twitter', label: 'X / Twitter' },
 ];
 
-export interface HandleState { handle: string; url: string; status: 'idle' | 'queued' | 'running' | 'done' | 'failed'; fetchedAt: number | null; error: string | null; errorKind: string | null; followers: number | null; name: string | null }
-export interface CompanyInfo { id: number; name: string; handles: Partial<Record<ProfilePlatform, HandleState>> }
+export interface HandleState { source?: 'manual' | 'auto'; handle: string; url: string; status: 'idle' | 'queued' | 'running' | 'done' | 'failed'; fetchedAt: number | null; error: string | null; errorKind: string | null; followers: number | null; name: string | null }
+export interface CompanyInfo { website?: string; lookup?: { state: string; note: string }; id: number; name: string; handles: Partial<Record<ProfilePlatform, HandleState>> }
 export interface Row { companyId: number; platform: ProfilePlatform; month: string; format: string; category: string; posts: number; views: number; likes: number; comments: number; shares: number }
 export interface Summary { demo?: boolean; months: string[]; companies: CompanyInfo[]; rows: Row[] }
 export interface Post {

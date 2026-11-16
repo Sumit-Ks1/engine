@@ -58,10 +58,12 @@ made for this purpose, not personal ones, and run the engine on the same network
 A separate section (button on the home page) that reads each company's **official accounts** on
 YouTube, Instagram and X and compares them over the last 12 months.
 
-1. Open **Brand analysis**, expand *Official handles*, and enter each company's handle or profile
-   link per platform. Handles are entered by hand on purpose: guessing the "official" account
-   would make the numbers untrustworthy.
-2. Press **Collect now**. Nothing runs before that, and nothing re-runs by itself.
+1. Open **Brand analysis** and press **Collect now**. Nothing runs before that, and nothing
+   re-runs by itself.
+2. For every company that has a website saved, the engine opens that website, reads the brand's
+   own Instagram, YouTube and X links from the page (footer icons, structured data), and then
+   reads the last 12 months of each account. The accounts it found are listed under *Official
+   accounts*, where any of them can be corrected or added by hand. A saved account is never replaced.
 3. The comparison page shows who leads on the chosen measure, a month-by-month leader grid,
    monthly trends per company, format mix and post kinds, a table view, and every post behind
    the numbers with a link to the original. Each company name opens its own page.

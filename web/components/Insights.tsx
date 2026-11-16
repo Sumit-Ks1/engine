@@ -9,10 +9,10 @@ import { useSummary } from './useSummary';
 const STATUS: Record<string, string> = { idle: 'Not collected', queued: 'Waiting', running: 'Collecting…', done: 'Collected', failed: 'Failed' };
 
 function HandleRow({ company, onSaved }: { company: CompanyInfo; onSaved: () => void }) {
-  const initial = Object.fromEntries(PROFILE_PLATFORMS.map((p) => [p.id, company.handles[p.id]?.handle ?? ''])) as Record<ProfilePlatform, string>;
+  const initial = { website: company.website ?? '', ...Object.fromEntries(PROFILE_PLATFORMS.map((p) => [p.id, company.handles[p.id]?.handle ?? ''])) } as Record<ProfilePlatform | 'website', string>;
   const [v, setV] = useState(initial);
   const [msg, setMsg] = useState('');
-  const dirty = PROFILE_PLATFORMS.some((p) => v[p.id].trim() !== initial[p.id]);
+  const dirty = (['website', ...PROFILE_PLATFORMS.map((p) => p.id)] as const).some((k) => v[k].trim() !== initial[k]);
   async function save() {
     const res = await fetch(`/api/companies/${company.id}/handles`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(v) });
     setMsg(res.ok ? '' : (await res.json().catch(() => ({}))).error ?? 'Could not save.');
@@ -21,14 +21,20 @@ function HandleRow({ company, onSaved }: { company: CompanyInfo; onSaved: () => 
   return (
     <tr>
       <td><Link className="kw" href={`/insights/c/${company.id}`}>{company.name}</Link></td>
+      <td>
+        <input className="input" aria-label={`${company.name} website`} placeholder="brand website" value={v.website} onChange={(e) => setV({ ...v, website: e.target.value })} />
+        {company.lookup?.state && <div className="sub" style={{ maxWidth: 240 }}>
+          {company.lookup.state === 'queued' ? 'Waiting to read the website' : company.lookup.state === 'running' ? 'Reading the website…' : company.lookup.note}
+        </div>}
+      </td>
       {PROFILE_PLATFORMS.map((p) => {
         const h = company.handles[p.id];
         return (
           <td key={p.id}>
-            <input className="input" aria-label={`${company.name} on ${p.label}`} placeholder="handle or profile link" value={v[p.id]} onChange={(e) => setV({ ...v, [p.id]: e.target.value })} />
+            <input className="input" aria-label={`${company.name} on ${p.label}`} placeholder="found automatically" value={v[p.id]} onChange={(e) => setV({ ...v, [p.id]: e.target.value })} />
             {h && <div className="sub" title={h.error ?? undefined}>
               <span className={`dot ${h.status === 'queued' ? '' : h.status === 'idle' ? '' : h.status}`} style={{ display: 'inline-block', marginRight: 5 }} />
-              {STATUS[h.status]}{h.status === 'failed' && h.error ? `: ${h.error.slice(0, 90)}` : h.followers ? ` · ${compact(h.followers)} followers` : ''}
+              {h.source === 'auto' ? 'From website · ' : ''}{STATUS[h.status]}{h.status === 'failed' && h.error ? `: ${h.error.slice(0, 90)}` : h.followers ? ` · ${compact(h.followers)} followers` : ''}
             </div>}
           </td>
         );
@@ -39,7 +45,8 @@ function HandleRow({ company, onSaved }: { company: CompanyInfo; onSaved: () => 
 }
 
 export default function Insights() {
-  const { data, error, load, working, total, version } = useSummary();
+  const { data, error, load, working, lookups, total, version } = useSummary();
+  const canRun = (data?.companies ?? []).some((c) => c.website || Object.keys(c.handles).length);
   const [platform, setPlatform] = useState<'' | ProfilePlatform>('');
   const [metric, setMetric] = useState<MetricId>('views');
   const [busy, setBusy] = useState(false);
@@ -70,26 +77,26 @@ export default function Insights() {
         <Link className="btn small" href="/">← All companies</Link>
         <div className="brand">Brand analysis</div>
         <div className="spacer" />
-        <span className="muted">{working ? `Collecting… ${total - working} of ${total} handles done` : lastRun ? `Last collected ${new Date(lastRun).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}` : ''}</span>
+        <span className="muted">{lookups ? `Finding official accounts… ${lookups} ${lookups === 1 ? 'website' : 'websites'} left` : working ? `Collecting… ${total - working} of ${total} accounts done` : lastRun ? `Last collected ${new Date(lastRun).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}` : ''}</span>
         {working > 0 && <button className="btn small" disabled={busy} onClick={() => run('stop')}>Stop waiting ones</button>}
-        <button className="btn primary" disabled={busy || !total || working > 0} onClick={() => run('run')}>{working ? 'Collecting…' : 'Collect now'}</button>
+        <button className="btn primary" disabled={busy || !canRun || working > 0} onClick={() => run('run')}>{working ? 'Collecting…' : 'Collect now'}</button>
       </header>
       {error && <p className="note bad">{error}</p>}
       {data?.demo && <div className="banner">Sample-data mode is on. Everything shown is generated placeholder data, not real accounts.</div>}
 
-      <details className="panel" open={!!data && !rows.length && !platform}>
-        <summary>Official handles ({total} saved)</summary>
-        <p className="hint" style={{ marginTop: 0 }}>Enter each company's official account per platform, as a handle or a profile link. Nothing is collected until you press Collect now; each run reads the last 12 months of every saved handle.</p>
+      <details className="panel">
+        <summary>Official accounts ({total} found)</summary>
+        <p className="hint" style={{ marginTop: 0 }}>You do not need to fill anything in. When you press Collect now, the engine opens each brand's website, reads its official Instagram, YouTube and X links from the page, and then reads the last 12 months of each account. Check the accounts it found here; type over one to correct it, or add one the website does not link.</p>
         <div className="scroll">
           <table className="handles">
-            <thead><tr><th>Company</th>{PROFILE_PLATFORMS.map((p) => <th key={p.id}>{p.label}</th>)}<th /></tr></thead>
-            <tbody>{companies.map((c) => <HandleRow key={`${c.id}:${PROFILE_PLATFORMS.map((p) => c.handles[p.id]?.handle ?? '').join('|')}`} company={c} onSaved={load} />)}</tbody>
+            <thead><tr><th>Company</th><th>Website</th>{PROFILE_PLATFORMS.map((p) => <th key={p.id}>{p.label}</th>)}<th /></tr></thead>
+            <tbody>{companies.map((c) => <HandleRow key={`${c.id}:${c.website}:${PROFILE_PLATFORMS.map((p) => c.handles[p.id]?.handle ?? '').join('|')}`} company={c} onSaved={load} />)}</tbody>
           </table>
         </div>
       </details>
 
       {data && !(data.rows.length) ? (
-        <div className="panel empty"><h3>No brand data yet</h3><p>Save the official handles above, then press Collect now.</p></div>
+        <div className="panel empty"><h3>{working ? 'Collecting…' : 'No brand data yet'}</h3><p>{working ? 'Charts appear here as each account finishes.' : 'Press Collect now. The engine finds each company\'s official accounts and reads the last 12 months.'}</p></div>
       ) : data && (
         <>
           <div className="filters">
