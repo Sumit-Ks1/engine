@@ -2,7 +2,7 @@ import { appendFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { config, PLATFORMS, type Platform } from './config.js';
 import * as lanes from './lanes.js';
-import { claimNext, completeJob, failJob, getKeyword, requeueStale, type Job } from './db.js';
+import { claimNext, completeJob, failJob, getKeyword, jobExists, requeueStale, type Job } from './db.js';
 import { rank, scrapers } from './scrapers/index.js';
 import { CancelledError, ScrapeError } from './types.js';
 
@@ -20,7 +20,7 @@ async function run(job: Job) {
   const started = Date.now();
   lanes.started(job.platform);
   // a removed keyword has no row any more: its queued jobs are gone, and work in progress stops at the next step
-  const cancelled = () => !getKeyword(job.keyword_id);
+  const cancelled = () => !jobExists(job.keyword_id, job.platform);
   try {
     const items = await scrapers[job.platform](kw.term, { limit: config.resultLimit, log: (m) => log(`${label} ${m}`), cancelled });
     if (cancelled()) throw new CancelledError();

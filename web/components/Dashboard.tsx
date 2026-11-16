@@ -80,8 +80,9 @@ export default function Dashboard({ companyId }: { companyId: string }) {
     return () => { clearTimeout(first); clearInterval(timer); };
   }, [load]);
 
-  const report = (r: { added: number; duplicates: number; invalid: number }) => {
+  const report = (r: { added: number; duplicates: number; invalid: number; columns?: string[] }) => {
     const parts = [`${r.added} added`];
+    if (r.columns?.length) parts.unshift(`Platform columns found: ${r.columns.map(labelOf).join(', ')}`);
     if (r.duplicates) parts.push(`${r.duplicates} already in the list`);
     if (r.invalid) parts.push(`${r.invalid} skipped (empty or longer than 100 characters)`);
     setNote({ ok: true, msg: parts.join(' · ') });
@@ -149,7 +150,7 @@ export default function Dashboard({ companyId }: { companyId: string }) {
           <button className="btn" disabled={busy} onClick={() => fileRef.current?.click()}>Upload sheet</button>
           <input ref={fileRef} type="file" accept=".xlsx,.csv,.txt" hidden onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
         </div>
-        <p className="hint">Upload an .xlsx or .csv with one keyword per cell. A leading # is optional. Each keyword is collected on all six platforms, one keyword at a time per platform, in the order listed.</p>
+        <p className="hint">Typed keywords and plain sheets (one keyword per cell) are collected on all six platforms. If a sheet's first row names platforms (YouTube, Instagram, X, Reddit, Pinterest, Google), each keyword is collected only on the platform it sits under. A leading # is optional.</p>
         {note && <p className={`note ${note.ok ? 'ok' : 'bad'}`}>{note.msg}</p>}
       </section>
 
@@ -172,7 +173,7 @@ export default function Dashboard({ companyId }: { companyId: string }) {
                     <td><Link className="kw" href={`/k/${k.id}?c=${companyId}`}>#{k.term}</Link></td>
                     <td>
                       <div className="chips">
-                        {PLATFORMS.map((p) => (
+                        {PLATFORMS.filter((p) => k.platforms[p.id]).map((p) => (
                           <Link key={p.id} className="chip" href={`/k/${k.id}?c=${companyId}&p=${p.id}`} title={`${p.label}: ${stateLabel(k.platforms[p.id])}`}>
                             <span className={`dot ${dotClass(k.platforms[p.id])}`} />{p.label} <b>{stateLabel(k.platforms[p.id])}</b>
                           </Link>

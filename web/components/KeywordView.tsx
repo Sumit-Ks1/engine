@@ -28,14 +28,19 @@ export default function KeywordView({ id, initialPlatform, companyId }: { id: st
   const [sort, setSort] = useState('rank');
 
   const load = useCallback(async () => {
-    const res = await fetch(`/api/keywords/${id}?platform=${platform}`);
+    const res = await fetch(`/api/keywords/${id}?platform=${platform}${companyId ? `&c=${companyId}` : ''}`);
     if (res.status === 401) { window.location.href = '/login'; return; }
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { setError(res.status === 404 ? 'This keyword no longer exists.' : body.error ?? 'Could not load results.'); return; }
     const stats = await fetch('/api/stats').then((r) => (r.ok ? r.json() : null)).catch(() => null);
     setError(''); setData({ ...body, accounts: stats?.accounts });
-  }, [id, platform]);
+  }, [id, platform, companyId]);
 
+  // only the platforms this keyword is collected on get a tab
+  const tabs = PLATFORMS.filter((p) => !data || data.platforms[p.id]);
+  useEffect(() => {
+    if (data && !data.platforms[platform] && tabs.length) setPlatform(tabs[0].id);
+  }, [data, platform, tabs]);
   const state = data?.platforms[platform];
   const working = state?.status === 'queued' || state?.status === 'running';
   useEffect(() => { setData((d) => (d ? { ...d, items: undefined } : d)); void load(); }, [load]);
@@ -98,7 +103,7 @@ export default function KeywordView({ id, initialPlatform, companyId }: { id: st
         <>
           <h1>#{data?.keyword.term ?? '…'}</h1>
           <div className="tabs">
-            {PLATFORMS.map((p) => (
+            {tabs.map((p) => (
               <button key={p.id} className={`tab ${p.id === platform ? 'on' : ''}`} onClick={() => pick(p.id)}>
                 <span className={`dot ${dotClass(data?.platforms[p.id])}`} />{p.label} <small>{stateLabel(data?.platforms[p.id])}</small>
               </button>

@@ -67,15 +67,21 @@ app.get('/companies/:id/keywords', async (req, reply) => {
 app.post('/companies/:id/keywords', async (req, reply) => {
   const id = idOf((req.params as any).id);
   if (!id || !store.getCompany(id)) return reply.code(404).send({ error: 'not found' });
+  // each entry is a keyword for all platforms ("term") or for chosen ones ({ term, platforms })
   const terms = (req.body as { terms?: unknown })?.terms;
   if (!Array.isArray(terms) || terms.length > 5000) return reply.code(400).send({ error: 'terms must be an array of at most 5000 keywords' });
-  const clean = new Map<string, string>();
+  const clean = new Map<string, Set<Platform>>();
   let invalid = 0;
   for (const t of terms) {
-    const k = normalizeKeyword(t);
-    if (k) clean.set(k, k); else invalid++;
+    const obj = t && typeof t === 'object' ? (t as { term?: unknown; platforms?: unknown }) : null;
+    const k = normalizeKeyword(obj ? obj.term : t);
+    const wanted = obj && Array.isArray(obj.platforms) ? obj.platforms.map(platformOf).filter((p): p is Platform => p !== null) : [...PLATFORMS];
+    if (!k || !wanted.length) { invalid++; continue; }
+    const set = clean.get(k) ?? new Set<Platform>();
+    wanted.forEach((p) => set.add(p));
+    clean.set(k, set);
   }
-  const result = store.addKeywords(id, [...clean.values()]);
+  const result = store.addKeywords(id, [...clean].map(([term, set]) => ({ term, platforms: [...set] })));
   queue.kick();
   return { ...result, duplicates: result.duplicates + (terms.length - invalid - clean.size), invalid };
 });
@@ -101,8 +107,12 @@ app.get('/keywords/:id', async (req, reply) => {
   const id = idOf((req.params as any).id);
   const keyword = id && store.getKeyword(id);
   if (!keyword) return reply.code(404).send({ error: 'not found' });
-  const jobs = store.getJobs(keyword.id);
-  const platform = platformOf((req.query as any).platform);
+  // seen from a company, a keyword shows only the platforms that company asked for
+  const companyId = idOf((req.query as any).c);
+  const wanted = companyId ? store.linkedPlatforms(companyId, keyword.id) : null;
+  const jobs = store.getJobs(keyword.id).filter((j) => !wanted || wanted.includes(j.platform));
+  const asked = platformOf((req.query as any).platform);
+  const platform = asked && jobs.some((j) => j.platform === asked) ? asked : null;
   return {
     keyword,
     platforms: Object.fromEntries(jobs.map((j) => [j.platform, {

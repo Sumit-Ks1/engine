@@ -25,7 +25,18 @@ cd web && cp .env.example .env.local && npm install && npm run dev
 
 Fill in both env files first (`openssl rand -hex 32` for the key and the session secret).
 Open http://localhost:3000, sign in, pick a company, then add keywords or upload an `.xlsx` / `.csv`.
-Companies are only folders for keywords; the company name itself is never searched. A keyword
+Companies are only folders for keywords; the company name itself is never searched.
+
+Sheets come in two shapes:
+
+| Shape | Example first row | What is collected |
+|---|---|---|
+| Plain | `Keyword` (or no heading at all) | Every keyword on all six platforms |
+| Platform columns | `YouTube`, `Instagram`, `X`, `Reddit`, `Pinterest`, `Google` (any subset, any order) | Each keyword only on the platform it sits under |
+
+In a platform sheet, a keyword listed under two platforms runs on both, a `Keyword` column still
+means all platforms, and other columns (S.No, Notes) are ignored. Typed keywords always run on all six.
+ A keyword
 listed under two companies is collected once and shown under both.
 
 Production: `npm run build && npm start` in each folder. Keep the engine on a private address.

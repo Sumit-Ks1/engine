@@ -80,6 +80,13 @@ const insKeyword = db.prepare(`INSERT INTO keywords (term, term_key, created_at)
 const insJob = db.prepare(`INSERT INTO jobs (keyword_id, platform, queued_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`);
 const insLink = db.prepare(`INSERT INTO company_keywords (company_id, keyword_id, position) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`);
 
+// which platforms a company wants for a keyword ('' = all six)
+if (!(db.prepare(`PRAGMA table_info(company_keywords)`).all() as { name: string }[]).some((c) => c.name === 'platforms')) {
+  db.exec(`ALTER TABLE company_keywords ADD COLUMN platforms TEXT NOT NULL DEFAULT ''`);
+}
+const encodePlatforms = (list: Platform[]) => { const set = PLATFORMS.filter((p) => list.includes(p)); return set.length === PLATFORMS.length ? '' : set.join(','); };
+const decodePlatforms = (v: string): Platform[] => (v ? PLATFORMS.filter((p) => v.split(',').includes(p)) : [...PLATFORMS]);
+
 // keywords are case sensitive ("Wakefit" and "wakefit" are two keywords); older databases stored a lowercased key
 if (!db.prepare(`SELECT v FROM kv WHERE k = 'keywords_case_sensitive'`).get()) {
   db.exec(`UPDATE keywords SET term_key = term; INSERT INTO kv (k, v) VALUES ('keywords_case_sensitive', '1');`);
@@ -103,13 +110,25 @@ if (!db.prepare(`SELECT v FROM kv WHERE k = 'companies_seeded'`).get()) {
 export interface Company { id: number; name: string; created_at: number }
 
 export function listCompanies() {
-  return db.prepare(`
-    SELECT c.id, c.name, c.created_at,
-      (SELECT COUNT(*) FROM company_keywords ck WHERE ck.company_id = c.id) AS keywords,
-      (SELECT COUNT(*) FROM jobs j JOIN company_keywords ck ON ck.keyword_id = j.keyword_id WHERE ck.company_id = c.id) AS jobs,
-      (SELECT COUNT(*) FROM jobs j JOIN company_keywords ck ON ck.keyword_id = j.keyword_id WHERE ck.company_id = c.id AND j.status IN ('done', 'failed')) AS finished,
-      (SELECT COUNT(*) FROM jobs j JOIN company_keywords ck ON ck.keyword_id = j.keyword_id WHERE ck.company_id = c.id AND j.status = 'failed') AS failed
-    FROM companies c ORDER BY c.id`).all() as unknown as (Company & { keywords: number; jobs: number; finished: number; failed: number })[];
+  const companies = db.prepare(`SELECT id, name, created_at FROM companies ORDER BY id`).all() as unknown as Company[];
+  const rows = db.prepare(`
+    SELECT ck.company_id, ck.keyword_id, ck.platforms, j.platform, j.status
+    FROM company_keywords ck LEFT JOIN jobs j ON j.keyword_id = ck.keyword_id`).all() as { company_id: number; keyword_id: number; platforms: string; platform: Platform | null; status: string }[];
+  const agg = new Map<number, { keywords: Set<number>; jobs: number; finished: number; failed: number }>();
+  for (const r of rows) {
+    const a = agg.get(r.company_id) ?? { keywords: new Set<number>(), jobs: 0, finished: 0, failed: 0 };
+    agg.set(r.company_id, a);
+    a.keywords.add(r.keyword_id);
+    // only the platforms this company asked for count towards its progress
+    if (!r.platform || !decodePlatforms(r.platforms).includes(r.platform)) continue;
+    a.jobs++;
+    if (r.status === 'done' || r.status === 'failed') a.finished++;
+    if (r.status === 'failed') a.failed++;
+  }
+  return companies.map((c) => {
+    const a = agg.get(c.id);
+    return { ...c, keywords: a?.keywords.size ?? 0, jobs: a?.jobs ?? 0, finished: a?.finished ?? 0, failed: a?.failed ?? 0 };
+  });
 }
 
 export const getCompany = (id: number) => db.prepare(`SELECT id, name, created_at FROM companies WHERE id = ?`).get(id) as unknown as Company | undefined;
@@ -119,37 +138,71 @@ export function addCompany(name: string): Company | null {
   return r.changes ? getCompany(Number(r.lastInsertRowid))! : null;
 }
 
-const dropOrphanKeywords = () => db.prepare(`DELETE FROM keywords WHERE id NOT IN (SELECT keyword_id FROM company_keywords)`).run();
+/**
+ * After links are removed: keywords nobody lists are deleted, and platforms nobody asks for
+ * any more are dropped from the keywords that remain.
+ */
+function cleanUp(keywordIds: number[]) {
+  db.prepare(`DELETE FROM keywords WHERE id NOT IN (SELECT keyword_id FROM company_keywords)`).run();
+  const links = db.prepare(`SELECT platforms FROM company_keywords WHERE keyword_id = ?`);
+  for (const id of keywordIds) {
+    const wanted = new Set((links.all(id) as { platforms: string }[]).flatMap((l) => decodePlatforms(l.platforms)));
+    if (!wanted.size || wanted.size === PLATFORMS.length) continue;
+    for (const p of PLATFORMS) {
+      if (wanted.has(p)) continue;
+      db.prepare(`DELETE FROM jobs WHERE keyword_id = ? AND platform = ?`).run(id, p);
+      db.prepare(`DELETE FROM results WHERE keyword_id = ? AND platform = ?`).run(id, p);
+    }
+  }
+}
+const keywordIdsOf = (companyId: number) => (db.prepare(`SELECT keyword_id FROM company_keywords WHERE company_id = ?`).all(companyId) as { keyword_id: number }[]).map((r) => r.keyword_id);
 
 export function deleteCompany(id: number) {
   return tx(() => {
+    const ids = keywordIdsOf(id);
     const ok = db.prepare(`DELETE FROM companies WHERE id = ?`).run(id).changes > 0;
-    if (ok) dropOrphanKeywords();
+    if (ok) cleanUp(ids);
     return ok;
   });
 }
 
-/** Adds keywords to a company. A keyword another company already has is linked, not collected twice. */
-export function addKeywords(companyId: number, terms: string[]): { added: number; duplicates: number } {
+export interface KeywordEntry { term: string; platforms: Platform[] }
+
+/**
+ * Adds keywords to a company, each for the platforms given. A keyword another company already
+ * has is linked, not collected twice; only platforms not yet collected for it are queued.
+ */
+export function addKeywords(companyId: number, entries: KeywordEntry[]): { added: number; duplicates: number } {
   return tx(() => {
     let added = 0;
     const now = Date.now();
     let position = (db.prepare(`SELECT COALESCE(MAX(position), -1) AS p FROM company_keywords WHERE company_id = ?`).get(companyId) as { p: number }).p;
     const find = db.prepare(`SELECT id FROM keywords WHERE term_key = ?`);
-    for (const term of terms) {
+    const link = db.prepare(`SELECT platforms FROM company_keywords WHERE company_id = ? AND keyword_id = ?`);
+    const setLink = db.prepare(`UPDATE company_keywords SET platforms = ? WHERE company_id = ? AND keyword_id = ?`);
+    for (const { term, platforms } of entries) {
       const r = insKeyword.run(term, term, now);
       const keywordId = r.changes ? Number(r.lastInsertRowid) : (find.get(term) as { id: number }).id;
-      if (r.changes) for (const p of PLATFORMS) insJob.run(keywordId, p, now);
-      if (insLink.run(companyId, keywordId, ++position).changes) added++;
+      for (const p of platforms) insJob.run(keywordId, p, now);
+      const existing = link.get(companyId, keywordId) as { platforms: string } | undefined;
+      if (!existing) {
+        insLink.run(companyId, keywordId, ++position);
+        setLink.run(encodePlatforms(platforms), companyId, keywordId);
+        added++;
+      } else {
+        // already listed: adding it for more platforms widens it
+        const merged = encodePlatforms([...decodePlatforms(existing.platforms), ...platforms]);
+        if (merged !== existing.platforms) { setLink.run(merged, companyId, keywordId); added++; }
+      }
     }
-    return { added, duplicates: terms.length - added };
+    return { added, duplicates: entries.length - added };
   });
 }
 
 export function removeKeyword(companyId: number, keywordId: number) {
   return tx(() => {
     const ok = db.prepare(`DELETE FROM company_keywords WHERE company_id = ? AND keyword_id = ?`).run(companyId, keywordId).changes > 0;
-    if (ok) dropOrphanKeywords();
+    if (ok) cleanUp([keywordId]);
     return ok;
   });
 }
@@ -157,29 +210,34 @@ export function removeKeyword(companyId: number, keywordId: number) {
 /** Removes several keywords from a company at once; `ids = null` removes every keyword of the company. */
 export function removeKeywords(companyId: number, ids: number[] | null): number {
   return tx(() => {
+    const target = ids ?? keywordIdsOf(companyId);
     let removed = 0;
-    if (ids === null) {
-      removed = Number(db.prepare(`DELETE FROM company_keywords WHERE company_id = ?`).run(companyId).changes);
-    } else {
-      const del = db.prepare(`DELETE FROM company_keywords WHERE company_id = ? AND keyword_id = ?`);
-      for (const id of ids) removed += Number(del.run(companyId, id).changes);
-    }
-    if (removed) dropOrphanKeywords();
+    const del = db.prepare(`DELETE FROM company_keywords WHERE company_id = ? AND keyword_id = ?`);
+    for (const id of target) removed += Number(del.run(companyId, id).changes);
+    if (removed) cleanUp(target);
     return removed;
   });
 }
+
+/** Platforms a company asked for on a keyword (null when the company does not list it). */
+export function linkedPlatforms(companyId: number, keywordId: number): Platform[] | null {
+  const row = db.prepare(`SELECT platforms FROM company_keywords WHERE company_id = ? AND keyword_id = ?`).get(companyId, keywordId) as { platforms: string } | undefined;
+  return row ? decodePlatforms(row.platforms) : null;
+}
+
+export const jobExists = (keywordId: number, platform: Platform) => !!db.prepare(`SELECT 1 FROM jobs WHERE keyword_id = ? AND platform = ?`).get(keywordId, platform);
 
 export function listKeywords(companyId: number, search: string, limit: number, offset: number) {
   const like = `%${search.replace(/[\\%_]/g, '\\$&')}%`;
   const where = `FROM keywords k JOIN company_keywords ck ON ck.keyword_id = k.id WHERE ck.company_id = ? AND k.term LIKE ? ESCAPE '\\'`;
   const total = (db.prepare(`SELECT COUNT(*) AS n ${where}`).get(companyId, like) as { n: number }).n;
-  const rows = db.prepare(`SELECT k.id, k.term, k.created_at ${where} ORDER BY ck.position, k.id LIMIT ? OFFSET ?`).all(companyId, like, limit, offset) as unknown as Keyword[];
+  const rows = db.prepare(`SELECT k.id, k.term, k.created_at, ck.platforms AS wanted ${where} ORDER BY ck.position, k.id LIMIT ? OFFSET ?`).all(companyId, like, limit, offset) as unknown as (Keyword & { wanted: string })[];
   const jobsFor = db.prepare(`SELECT platform, status, result_count, fetched_at, error_kind FROM jobs WHERE keyword_id = ?`);
   return {
     total,
-    keywords: rows.map((k) => ({
+    keywords: rows.map(({ wanted, ...k }) => ({
       ...k,
-      platforms: Object.fromEntries((jobsFor.all(k.id) as any[]).map((j) => [j.platform, { status: j.status, count: j.result_count, fetchedAt: j.fetched_at, errorKind: j.error_kind }])),
+      platforms: Object.fromEntries((jobsFor.all(k.id) as any[]).filter((j) => decodePlatforms(wanted).includes(j.platform)).map((j) => [j.platform, { status: j.status, count: j.result_count, fetchedAt: j.fetched_at, errorKind: j.error_kind }])),
     })),
   };
 }

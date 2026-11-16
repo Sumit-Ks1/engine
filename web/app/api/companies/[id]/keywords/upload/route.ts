@@ -2,10 +2,11 @@ import ExcelJS from 'exceljs';
 import { NextResponse, type NextRequest } from 'next/server';
 import { engine } from '@/lib/engine';
 import { safeId } from '@/lib/ids';
+import { entriesFromRows, rowsFromText, type Entry } from '@/lib/sheet';
+import type { PlatformId } from '@/lib/types';
 
 export const runtime = 'nodejs';
 const MAX_BYTES = 5 * 1024 * 1024;
-const HEADER = /^(keywords?|hashtags?|tags?|terms?|s\.?\s?no\.?|sr\.?\s?no\.?|#)$/i;
 
 const cellText = (v: ExcelJS.CellValue): string => {
   if (v === null || v === undefined) return '';
@@ -25,23 +26,38 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (file.size > MAX_BYTES) return NextResponse.json({ error: 'File is larger than 5 MB.' }, { status: 413 });
 
   const name = file.name.toLowerCase();
-  const terms: string[] = [];
+  const entries: Entry[] = [];
+  const columns = new Set<PlatformId>();
+  const take = (rows: string[][]) => {
+    const parsed = entriesFromRows(rows);
+    entries.push(...parsed.entries);
+    parsed.columns.forEach((c) => columns.add(c));
+  };
   try {
     if (name.endsWith('.xlsx')) {
       const wb = new ExcelJS.Workbook();
       await wb.xlsx.load(await file.arrayBuffer());
-      wb.eachSheet((sheet) => sheet.eachRow((row) => row.eachCell((cell) => terms.push(cellText(cell.value)))));
+      wb.eachSheet((sheet) => {
+        const rows: string[][] = [];
+        sheet.eachRow((row) => {
+          const cells: string[] = [];
+          row.eachCell((cell, col) => { cells[col - 1] = cellText(cell.value); });
+          rows.push(Array.from(cells, (c) => c ?? ''));
+        });
+        take(rows);
+      });
     } else if (name.endsWith('.csv') || name.endsWith('.txt')) {
-      terms.push(...(await file.text()).split(/[\r\n,;\t]+/).map((s) => s.replace(/^"|"$/g, '')));
+      take(rowsFromText(await file.text()));
     } else {
       return NextResponse.json({ error: 'Upload an .xlsx, .csv or .txt file.' }, { status: 415 });
     }
   } catch {
     return NextResponse.json({ error: 'That file could not be read. Save it as .xlsx and try again.' }, { status: 400 });
   }
-  // pure numbers are serial-number columns, not keywords
-  const clean = terms.map((t) => t.trim()).filter((t) => t && !HEADER.test(t) && !/^\d+$/.test(t));
-  if (!clean.length) return NextResponse.json({ error: 'No keywords found in that file.' }, { status: 400 });
-  if (clean.length > 5000) return NextResponse.json({ error: 'A file can hold at most 5000 keywords.' }, { status: 400 });
-  return engine(`/companies/${safeId((await params).id)}/keywords`, { method: 'POST', body: { terms: clean } });
+  if (!entries.length) return NextResponse.json({ error: 'No keywords found in that file.' }, { status: 400 });
+  if (entries.length > 5000) return NextResponse.json({ error: 'A file can hold at most 5000 keywords.' }, { status: 400 });
+
+  const res = await engine(`/companies/${safeId((await params).id)}/keywords`, { method: 'POST', body: { terms: entries } });
+  if (!res.ok) return res;
+  return NextResponse.json({ ...(await res.json()), columns: [...columns] });
 }
