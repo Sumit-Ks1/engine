@@ -16,6 +16,7 @@ try {
     const page = pages[i] ?? (await ctx.newPage());
     await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => undefined);
   }
+  await ctx.pages()[0]?.bringToFront().catch(() => undefined);
   console.log('\nA browser window is open with three tabs: Instagram, X and Reddit.');
   console.log('Sign in on each tab, then CLOSE THE WINDOW. Your sign-ins stay saved on this PC.\n');
   await new Promise<void>((done) => ctx.on('close', () => done()));

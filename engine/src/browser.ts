@@ -15,7 +15,8 @@ let ctx: Promise<BrowserContext> | null = null;
 export function launchOptions(headless: boolean, onScreen = config.browser.visible) {
   // a normal window parked off-screen: looks like an ordinary browser to the sites, stays out of the way
   const windowArgs = headless ? [] : [
-    ...(onScreen ? [] : ['--window-position=-2400,-2400']), '--window-size=1366,900',
+    // always state the position: Chrome otherwise reopens wherever the window last was, which may be off-screen
+    `--window-position=${onScreen ? '60,40' : '-2400,-2400'}`, `--window-size=${onScreen ? '1200,760' : '1366,900'}`,
     '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling',
   ];
   return {
