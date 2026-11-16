@@ -5,7 +5,9 @@ import * as store from './db.js';
 import { closeBrowser } from './browser.js';
 import { routes } from './http/proxy.js';
 import * as lanes from './lanes.js';
+import * as insights from './insights.js';
 import { startQueue } from './queue.js';
+import { PROFILE_PLATFORMS, normalizeHandle } from './scrapers/profiles.js';
 import { normalizeKeyword } from './util.js';
 
 if (!config.apiKey || config.apiKey.length < 24) {
@@ -131,6 +133,46 @@ app.post('/keywords/:id/refresh', async (req, reply) => {
   const queued = store.requeue(id, platform ?? undefined);
   queue.kick();
   return { queued };
+});
+
+// ---- brand analysis -------------------------------------------------------
+
+app.get('/insights/summary', async () => insights.summary());
+
+app.put('/companies/:id/handles', async (req, reply) => {
+  const id = idOf((req.params as any).id);
+  if (!id || !store.getCompany(id)) return reply.code(404).send({ error: 'not found' });
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const invalid: string[] = [];
+  for (const platform of PROFILE_PLATFORMS) {
+    if (!(platform in body)) continue;
+    const raw = String(body[platform] ?? '').trim();
+    const handle = raw ? normalizeHandle(platform, raw) : null;
+    if (raw && !handle) { invalid.push(platform); continue; }
+    store.setHandle(id, platform, handle);
+  }
+  if (invalid.length) return reply.code(400).send({ error: `Could not read the handle for: ${invalid.join(', ')}. Paste the profile link or the handle.` });
+  return { ok: true };
+});
+
+app.post('/insights/run', async (req) => {
+  const companyId = idOf((req.body as any)?.companyId);
+  const queued = store.queueProfiles(companyId);
+  queue.kick();
+  return { queued };
+});
+
+app.post('/insights/stop', async () => ({ stopped: store.cancelProfiles() }));
+
+app.get('/insights/posts', async (req) => {
+  const q = req.query as Record<string, string>;
+  return insights.posts({
+    company: idOf(q.company), platform: platformOf(q.platform),
+    month: /^\d{4}-\d{2}$/.test(q.month ?? '') ? q.month : undefined,
+    format: /^[a-z_]{1,20}$/.test(q.format ?? '') ? q.format : undefined,
+    category: /^[a-z_]{1,20}$/.test(q.category ?? '') ? q.category : undefined,
+    sort: q.sort, page: Number(q.page) || 1,
+  });
 });
 
 app.post('/accounts/:platform/resume', async (req, reply) => {

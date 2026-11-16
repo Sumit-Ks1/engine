@@ -52,6 +52,24 @@ export function parseSearch(data: unknown): { items: Item[]; continuation: strin
       }
       return false;
     }
+    const l = o.lockupViewModel;
+    if (l?.contentId && String(l.contentType ?? '').includes('VIDEO')) {
+      // newer tile used on channel pages
+      const meta = l.metadata?.lockupMetadataViewModel;
+      const parts: string[] = [];
+      walk(meta?.metadata, (m) => { if (typeof m.content === 'string') parts.push(m.content); });
+      const published = parts.find((t) => /\bago\b/i.test(t)) ?? '';
+      items.push({
+        url: `${ORIGIN}/watch?v=${l.contentId}`,
+        title: text(meta?.title),
+        type: 'video',
+        thumbnail: l.contentImage?.thumbnailViewModel?.image?.sources?.slice(-1)[0]?.url,
+        views: parseCount(parts.find((t) => /\bviews?\b/i.test(t)) ?? ''),
+        publishedAt: relativeToIso(published),
+        extra: { published: published || null, videoId: l.contentId },
+      });
+      return false;
+    }
     const token = o.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token;
     if (token) continuation = token;
   });
@@ -91,7 +109,7 @@ export const WATCH_IN_PAGE = (id: string) => `fetch('/watch?v=${id}&hl=en', { cr
 const applyDetails = (it: Item, d: ReturnType<typeof fromRaw>) => {
   if (d.likes !== null) it.likes = d.likes;
   if (d.comments !== null) it.comments = d.comments;
-  if (d.publishedAt) it.publishedAt = d.publishedAt;
+  if (d.publishedAt) { it.publishedAt = d.publishedAt; it.extra = { ...it.extra, exactDate: true }; }
   return d.likes !== null || d.publishedAt !== null;
 };
 
@@ -156,6 +174,50 @@ async function viaBrowser(keyword: string, want: number, cancelled: () => boolea
   return [...seen.values()];
 }
 
+/**
+ * Fills likes, comments and the exact upload date for each video: plain requests first, then
+ * the real browser (opened on `browserUrl`) for whatever is still missing.
+ */
+export async function fillDetails(items: Item[], session: Session, browserUrl: string, ctx: { log: (m: string) => void; cancelled: () => boolean }) {
+  let cursor = 0;
+  let ok = 0;
+  let tried = 0;
+  await Promise.all(Array.from({ length: Math.min(3, items.length) }, async () => {
+    while (cursor < items.length) {
+      // if the first pages all come back without numbers, YouTube is turning plain requests away: stop early
+      if ((tried >= 6 && ok === 0) || ctx.cancelled()) return;
+      const it = items[cursor++];
+      try {
+        const html = (await request(`${ORIGIN}/watch?v=${it.extra!.videoId}&hl=en`, { session, retries: 1 })).body;
+        if (applyDetails(it, parseWatch(html))) ok++;
+        if (/"paidContentOverlayRenderer"/.test(html)) it.extra = { ...it.extra, paidPromotion: true };
+      } catch { /* picked up by the browser pass below */ }
+      tried++;
+    }
+  }));
+  const missing = items.filter((it) => it.likes == null && !it.extra?.exactDate);
+  if (!missing.length || ctx.cancelled()) return;
+  ctx.log(`youtube details: ${items.length - missing.length} by request, ${missing.length} via browser`);
+  await capture({
+    cancelled: ctx.cancelled,
+    url: browserUrl,
+    match: () => false,
+    enough: () => true,
+    maxScrolls: 0,
+    onPage: async (page, phase) => {
+      if (phase !== 'loaded') return;
+      let failures = 0;
+      for (const it of missing) {
+        const raw = (await page.evaluate(WATCH_IN_PAGE(String(it.extra!.videoId))).catch(() => null)) as Raw | null;
+        if (raw && applyDetails(it, fromRaw(raw))) failures = 0;
+        else if (++failures >= 8) break;
+        if (ctx.cancelled()) break;
+        await sleep(500 + Math.random() * 900);
+      }
+    },
+  }).catch((e: Error) => ctx.log(`youtube browser details unavailable: ${e.message}`));
+}
+
 export const youtube: Scraper = async (keyword, ctx) => {
   const session = new Session();
   // skips the consent interstitial
@@ -176,47 +238,6 @@ export const youtube: Scraper = async (keyword, ctx) => {
   }
 
   const top = pool.sort((a, b) => (b.views ?? 0) - (a.views ?? 0)).slice(0, ctx.limit);
-  const enrich = top.slice(0, config.youtubeEnrichTop);
-
-  // 1) plain requests for each video page
-  let cursor = 0;
-  let ok = 0;
-  let tried = 0;
-  await Promise.all(Array.from({ length: Math.min(3, enrich.length) }, async () => {
-    while (cursor < enrich.length) {
-      // if the first pages all come back without numbers, YouTube is turning plain requests away: stop early
-      if ((tried >= 6 && ok === 0) || ctx.cancelled()) return;
-      const it = enrich[cursor++];
-      try {
-        const html = (await request(`${ORIGIN}/watch?v=${it.extra!.videoId}&hl=en`, { session, retries: 1 })).body;
-        if (applyDetails(it, parseWatch(html))) ok++;
-      } catch { /* picked up by the browser pass below */ }
-      tried++;
-    }
-  }));
-
-  // 2) whatever is still missing is loaded from inside the real browser
-  const missing = enrich.filter((it) => it.likes == null && !it.publishedAt);
-  if (missing.length) {
-    ctx.log(`youtube details: ${enrich.length - missing.length} by request, ${missing.length} via browser`);
-    await capture({
-      cancelled: ctx.cancelled,
-      url: `${ORIGIN}/results?${new URLSearchParams({ search_query: keyword, hl: 'en', gl: config.region })}`,
-      match: () => false,
-      enough: () => true,
-      maxScrolls: 0,
-      onPage: async (page, phase) => {
-        if (phase !== 'loaded') return;
-        let failures = 0;
-        for (const it of missing) {
-          const raw = (await page.evaluate(WATCH_IN_PAGE(String(it.extra!.videoId))).catch(() => null)) as Raw | null;
-          if (raw && applyDetails(it, fromRaw(raw))) failures = 0;
-          else if (++failures >= 8) break;
-          if (ctx.cancelled()) break;
-          await sleep(500 + Math.random() * 900);
-        }
-      },
-    }).catch((e: Error) => ctx.log(`youtube browser details unavailable: ${e.message}`));
-  }
+  await fillDetails(top.slice(0, config.youtubeEnrichTop), session, `${ORIGIN}/results?${new URLSearchParams({ search_query: keyword, hl: 'en', gl: config.region })}`, ctx);
   return top;
 };

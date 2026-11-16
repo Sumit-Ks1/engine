@@ -53,6 +53,32 @@ A Chrome window opens with three tabs. Sign in on each, then close the window. T
 are saved in `engine/data/browser-profile` on this PC and reused by the engine. Use accounts
 made for this purpose, not personal ones, and run the engine on the same network you signed in from.
 
+## Brand analysis
+
+A separate section (button on the home page) that reads each company's **official accounts** on
+YouTube, Instagram and X and compares them over the last 12 months.
+
+1. Open **Brand analysis**, expand *Official handles*, and enter each company's handle or profile
+   link per platform. Handles are entered by hand on purpose: guessing the "official" account
+   would make the numbers untrustworthy.
+2. Press **Collect now**. Nothing runs before that, and nothing re-runs by itself.
+3. The comparison page shows who leads on the chosen measure, a month-by-month leader grid,
+   monthly trends per company, format mix and post kinds, a table view, and every post behind
+   the numbers with a link to the original. Each company name opens its own page.
+
+How posts are labelled:
+
+| Label | Meaning | How reliable |
+|---|---|---|
+| Format (video, short/reel, image, text) | What the platform says the post is | Exact |
+| Collaboration | Instagram co-author or paid-partnership label; YouTube paid-promotion flag | Exact where the platform shows the label |
+| Likely promoted (estimate) | 100K+ views with engagement under 0.2% of views | An estimate. Platforms do not mark a brand's own ads on its profile |
+| Own post | Everything else | |
+
+Limits: numbers are what each platform displays at the moment of collection. Ads that never
+appear on the profile (unlisted videos, dark posts) are not seen at all. X shows only a limited
+history per account, and Instagram view counts exist only for reels.
+
 ## How it works
 
 - Adding a keyword queues one job per platform. Each job gathers a pool of up to `POOL_SIZE`

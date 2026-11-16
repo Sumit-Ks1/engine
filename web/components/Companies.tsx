@@ -49,6 +49,7 @@ export default function Companies() {
           </div>
         )}
         <div className="spacer" />
+        <Link className="btn small" href="/insights">Brand analysis</Link>
         <button className="btn small" onClick={logout}>Sign out</button>
       </header>
 

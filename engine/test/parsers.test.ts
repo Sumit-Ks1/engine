@@ -150,3 +150,19 @@ test('rank orders by traction and caps the list', () => {
   const r = rank([{ url: 'a', title: 'a', type: 'post', likes: 1 }, { url: 'b', title: 'b', type: 'video', views: 5e6 }, { url: 'c', title: 'c', type: 'post' }], 2);
   assert.deepEqual(r.map((x) => x.url), ['b', 'a']);
 });
+
+test('brand handles: normalising and classifying', async () => {
+  const { normalizeHandle, classify } = await import('../src/scrapers/profiles.js');
+  assert.equal(normalizeHandle('instagram', 'https://www.instagram.com/wakefitco/?hl=en'), 'wakefitco');
+  assert.equal(normalizeHandle('instagram', '@wakefitco'), 'wakefitco');
+  assert.equal(normalizeHandle('twitter', 'x.com/WakefitCo'), 'WakefitCo');
+  assert.equal(normalizeHandle('youtube', 'https://www.youtube.com/@Wakefit/videos'), '@Wakefit');
+  assert.equal(normalizeHandle('youtube', 'youtube.com/channel/UCabc_123-x'), 'channel/UCabc_123-x');
+  assert.equal(normalizeHandle('youtube', 'Wakefit'), '@Wakefit');
+  assert.equal(normalizeHandle('twitter', 'not a handle!'), null);
+  const post = { url: 'https://x', title: 't', type: 'video' as const };
+  assert.deepEqual([classify({ ...post, views: 5e6, likes: 300, comments: 10 }, 'youtube').category, classify({ ...post, views: 5e4, likes: 3000 }, 'youtube').category], ['promoted_est', 'organic']);
+  assert.equal(classify({ ...post, views: 5e6, likes: 300, extra: { collabWith: 'creator' } }, 'instagram').category, 'collaboration');
+  assert.equal(classify({ ...post, views: 5e6 }, 'youtube').category, 'organic', 'no like count means no estimate');
+  assert.deepEqual([classify({ ...post, extra: { format: 'short' } }, 'instagram').format, classify({ ...post, type: 'post' }, 'twitter').format], ['short', 'text']);
+});

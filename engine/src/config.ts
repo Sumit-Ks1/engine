@@ -45,6 +45,10 @@ export const config = {
   } as Partial<Record<Platform, number>>,
   /** Hours a signed-in platform rests after it rate-limits or challenges the session. */
   accountCooldownHours: int('ACCOUNT_COOLDOWN_HOURS', 6),
+  /** Brand analysis: how many months back official handles are read, and caps per handle. */
+  profileMonths: int('PROFILE_MONTHS', 12),
+  profileMaxPosts: int('PROFILE_MAX_POSTS', 600),
+  profileEnrichTop: int('PROFILE_ENRICH_TOP', 150),
   /** Candidates gathered per keyword before ranking down to resultLimit. */
   poolSize: int('POOL_SIZE', 300),
   browser: {

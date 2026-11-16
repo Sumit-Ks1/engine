@@ -2,7 +2,9 @@ import { appendFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { config, PLATFORMS, type Platform } from './config.js';
 import * as lanes from './lanes.js';
-import { claimNext, completeJob, failJob, getKeyword, jobExists, requeueStale, type Job } from './db.js';
+import { claimNext, claimNextProfile, completeJob, completeProfile, failJob, failProfile, getCompany, getKeyword, handleIs, jobExists, requeueStale, type HandleRow, type Job } from './db.js';
+import { windowStart } from './insights.js';
+import { classify, demoProfile, profileScrapers, type ProfilePlatform } from './scrapers/profiles.js';
 import { rank, scrapers } from './scrapers/index.js';
 import { CancelledError, ScrapeError } from './types.js';
 
@@ -45,12 +47,47 @@ async function run(job: Job) {
   }
 }
 
+/** Reads one company's official handle on one platform for the brand analysis. */
+async function runProfile(row: HandleRow) {
+  const label = `[profile ${row.platform}] ${getCompany(row.company_id)?.name ?? row.company_id} (${row.handle})`;
+  const started = Date.now();
+  const platform = row.platform as ProfilePlatform;
+  lanes.started(row.platform);
+  // the handle was removed or changed while it was being read
+  const cancelled = () => !handleIs(row.company_id, row.platform, row.handle);
+  const since = windowStart();
+  try {
+    const scraper = config.demoMode ? demoProfile : profileScrapers[platform];
+    const { posts, meta } = await scraper(row.handle, { log: (m) => log(`${label} ${m}`), cancelled, since });
+    if (cancelled()) throw new CancelledError();
+    const kept = posts.filter((p) => /^https:\/\//.test(p.url) && p.publishedAt && Date.parse(p.publishedAt) >= since).map((p) => classify(p, platform));
+    completeProfile(row, kept, meta);
+    lanes.finished(row.platform);
+    log(`${label} done: ${kept.length} posts in ${Date.now() - started}ms`);
+  } catch (e) {
+    if (e instanceof CancelledError || cancelled()) { lanes.finished(row.platform); log(`${label} stopped: handle was removed`); return; }
+    const err = e instanceof ScrapeError ? e : new ScrapeError('parse', (e as Error).message || String(e));
+    failProfile(row, err.message.slice(0, 500), err.kind);
+    lanes.finished(row.platform, err.kind, err.message);
+    log(`${label} failed (${err.kind}): ${err.message}`);
+    recordError(`${label} ${err.kind}: ${err.message}`);
+  }
+}
+
 function pump() {
   if (stopped) return;
   while (running.size < config.concurrency) {
     const counts = new Map<Platform, number>();
     for (const p of running.values()) counts.set(p, (counts.get(p) ?? 0) + 1);
     const busy = [...new Set([...[...counts].filter(([, n]) => n >= config.perPlatformConcurrency).map(([p]) => p), ...lanes.unavailable()])];
+    // a brand-analysis run is started by a person, so it goes ahead of background keyword work
+    const profile = claimNextProfile(busy);
+    if (profile) {
+      const key = `profile:${profile.company_id}:${profile.platform}`;
+      running.set(key, profile.platform);
+      void runProfile(profile).finally(() => { running.delete(key); pump(); });
+      continue;
+    }
     const job = claimNext(busy);
     if (!job) return;
     const key = `${job.keyword_id}:${job.platform}`;

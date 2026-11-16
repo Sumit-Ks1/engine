@@ -54,9 +54,32 @@ db.exec(`
     PRIMARY KEY (company_id, keyword_id)
   );
   CREATE INDEX IF NOT EXISTS company_keywords_kw ON company_keywords(keyword_id);
+  -- Brand analysis: one official handle per company and platform, its collection state, and its posts.
+  CREATE TABLE IF NOT EXISTS handles (
+    company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    handle TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'idle',        -- idle | queued | running | done | failed
+    queued_at INTEGER,
+    fetched_at INTEGER,
+    error TEXT,
+    error_kind TEXT,
+    meta TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (company_id, platform)
+  );
+  CREATE TABLE IF NOT EXISTS profile_posts (
+    company_id INTEGER NOT NULL,
+    platform TEXT NOT NULL,
+    url TEXT NOT NULL,
+    published_at INTEGER,
+    data TEXT NOT NULL,
+    PRIMARY KEY (company_id, platform, url),
+    FOREIGN KEY (company_id, platform) REFERENCES handles(company_id, platform) ON DELETE CASCADE
+  );
 `);
 // jobs interrupted by a restart go back in the queue
 db.prepare(`UPDATE jobs SET status = 'queued' WHERE status = 'running'`).run();
+db.prepare(`UPDATE handles SET status = 'queued' WHERE status = 'running'`).run();
 
 export const kvGet = (k: string) => (db.prepare(`SELECT v FROM kv WHERE k = ?`).get(k) as { v: string } | undefined)?.v || undefined;
 export const kvSet = (k: string, v: string) => { db.prepare(`INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`).run(k, v); };
@@ -314,4 +337,68 @@ export function stats() {
   const keywords = (db.prepare(`SELECT COUNT(*) AS n FROM keywords`).get() as { n: number }).n;
   const companies = (db.prepare(`SELECT COUNT(*) AS n FROM companies`).get() as { n: number }).n;
   return { companies, keywords, jobs: { queued: 0, running: 0, done: 0, failed: 0, ...byStatus } };
+}
+
+// ---------------------------------------------------------------- brand analysis
+
+export interface HandleRow {
+  company_id: number; platform: Platform; handle: string; status: 'idle' | 'queued' | 'running' | 'done' | 'failed';
+  queued_at: number | null; fetched_at: number | null; error: string | null; error_kind: string | null; meta: string;
+}
+
+export const listHandles = () => db.prepare(`SELECT * FROM handles ORDER BY company_id, platform`).all() as unknown as HandleRow[];
+
+/** Sets (or, with an empty value, clears) a company's handle on a platform. A changed handle drops the old posts. */
+export function setHandle(companyId: number, platform: Platform, handle: string | null) {
+  tx(() => {
+    const cur = db.prepare(`SELECT handle FROM handles WHERE company_id = ? AND platform = ?`).get(companyId, platform) as { handle: string } | undefined;
+    if (cur?.handle === handle) return;
+    db.prepare(`DELETE FROM handles WHERE company_id = ? AND platform = ?`).run(companyId, platform);
+    if (handle) db.prepare(`INSERT INTO handles (company_id, platform, handle) VALUES (?, ?, ?)`).run(companyId, platform, handle);
+  });
+}
+
+/** Queues collection for every saved handle (of one company, or all). Handles already running are left alone. */
+export function queueProfiles(companyId: number | null) {
+  return Number(db.prepare(`UPDATE handles SET status = 'queued', queued_at = ?, error = NULL, error_kind = NULL WHERE status != 'running' AND (? IS NULL OR company_id = ?)`)
+    .run(Date.now(), companyId, companyId).changes);
+}
+
+export function cancelProfiles() {
+  return Number(db.prepare(`UPDATE handles SET status = CASE WHEN fetched_at IS NULL THEN 'idle' ELSE 'done' END WHERE status = 'queued'`).run().changes);
+}
+
+export function claimNextProfile(busyPlatforms: Platform[]): HandleRow | undefined {
+  return tx(() => {
+    const skip = busyPlatforms.length ? `AND platform NOT IN (${busyPlatforms.map(() => '?').join(',')})` : '';
+    const row = db.prepare(`SELECT * FROM handles WHERE status = 'queued' ${skip} ORDER BY queued_at, company_id LIMIT 1`).get(...busyPlatforms) as unknown as HandleRow | undefined;
+    if (row) db.prepare(`UPDATE handles SET status = 'running' WHERE company_id = ? AND platform = ?`).run(row.company_id, row.platform);
+    return row;
+  });
+}
+
+export const handleIs = (companyId: number, platform: Platform, handle: string) =>
+  !!db.prepare(`SELECT 1 FROM handles WHERE company_id = ? AND platform = ? AND handle = ?`).get(companyId, platform, handle);
+
+export function completeProfile(row: HandleRow, posts: (Item & { format: string; category: string })[], meta: object) {
+  tx(() => {
+    // a run that read nothing never wipes what an earlier run stored
+    if (posts.length) {
+      db.prepare(`DELETE FROM profile_posts WHERE company_id = ? AND platform = ?`).run(row.company_id, row.platform);
+      const ins = db.prepare(`INSERT OR REPLACE INTO profile_posts (company_id, platform, url, published_at, data) VALUES (?, ?, ?, ?, ?)`);
+      for (const p of posts) ins.run(row.company_id, row.platform, p.url, p.publishedAt ? Date.parse(p.publishedAt) : null, JSON.stringify(p));
+    }
+    db.prepare(`UPDATE handles SET status = 'done', fetched_at = ?, error = ?, error_kind = NULL, meta = ? WHERE company_id = ? AND platform = ?`)
+      .run(Date.now(), posts.length ? null : 'No posts from the last months were found on this account.', JSON.stringify(meta), row.company_id, row.platform);
+  });
+}
+
+export function failProfile(row: HandleRow, error: string, kind: string) {
+  db.prepare(`UPDATE handles SET status = 'failed', error = ?, error_kind = ? WHERE company_id = ? AND platform = ?`).run(error, kind, row.company_id, row.platform);
+}
+
+export function profilePosts(companyId: number | null, platform: Platform | null, since: number) {
+  const rows = db.prepare(`SELECT company_id, platform, data FROM profile_posts WHERE (? IS NULL OR company_id = ?) AND (? IS NULL OR platform = ?) AND published_at >= ?`)
+    .all(companyId, companyId, platform, platform, since) as { company_id: number; platform: Platform; data: string }[];
+  return rows.map((r) => ({ companyId: r.company_id, platform: r.platform, ...(JSON.parse(r.data) as Item & { format: string; category: string }) }));
 }

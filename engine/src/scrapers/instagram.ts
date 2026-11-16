@@ -26,6 +26,13 @@ export function parseMedia(payloads: unknown): Item[] {
       comments: typeof o.comment_count === 'number' ? o.comment_count : prev?.comments ?? null,
       shares: typeof o.reshare_count === 'number' ? o.reshare_count : prev?.shares ?? null,
       publishedAt: typeof o.taken_at === 'number' ? new Date(o.taken_at * 1000).toISOString() : prev?.publishedAt ?? null,
+      extra: {
+        // collaboration posts list their co-authors; paid partnerships carry Instagram's own label
+        collabWith: (Array.isArray(o.coauthor_producers) ? o.coauthor_producers : []).map((u: any) => u?.username).filter(Boolean).join(',') || (prev?.extra?.collabWith as string) || '',
+        paidPartnership: !!o.is_paid_partnership || (Array.isArray(o.sponsor_tags) && o.sponsor_tags.length > 0) || !!prev?.extra?.paidPartnership,
+        format: isReel ? 'short' : o.media_type === 2 ? 'video' : 'image',
+        pinned: Array.isArray(o.timeline_pinned_user_ids) && o.timeline_pinned_user_ids.length > 0,
+      },
     };
     if (item.author) item.authorUrl = `${ORIGIN}/${item.author.slice(1)}/`;
     items.set(url, item);
@@ -61,8 +68,8 @@ export const GRID = `[...document.querySelectorAll('a[href]')].map((a) => {
 export const INFO = (id: string) => `fetch('/api/v1/media/${id}/info/', { credentials: 'include', headers: { 'x-ig-app-id': '936619743392459', 'x-requested-with': 'XMLHttpRequest' } })
   .then((r) => (r.ok ? r.json() : { __status: r.status })).catch(() => ({ __status: 0 }))`;
 
-const codeOf = (url: string) => url.split('/').filter(Boolean).pop()!;
-const hasNumbers = (it?: Item) => !!it && (it.views != null || it.likes != null);
+export const codeOf = (url: string) => url.split('/').filter(Boolean).pop()!;
+export const hasNumbers = (it?: Item) => !!it && (it.views != null || it.likes != null);
 
 export const instagram: Scraper = async (keyword, ctx) => {
   const tag = toTag(keyword);
