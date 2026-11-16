@@ -146,13 +146,22 @@ if (!db.prepare(`SELECT v FROM kv WHERE k = 'companies_seeded'`).get()) {
 const DEFAULT_WEBSITES: Record<string, string> = {
   'flo mattress': 'https://www.flomattress.com/', 'the sleep company': 'https://thesleepcompany.in/', sleepyhead: 'https://mysleepyhead.com/',
   wakefit: 'https://www.wakefit.co/', duroflex: 'https://www.duroflexworld.com/', sleepycat: 'https://sleepycat.in/', sunday: 'https://sundayrest.com/',
-  peps: 'https://pepsindia.com/', springfit: 'https://www.springfit.com/', 'century mattress': 'https://www.centuryindia.com/',
-  sleepwell: 'https://mysleepwell.com/', kurlon: 'https://www.kurlon.com/',
+  peps: 'https://pepsindia.com/', springfit: 'https://www.springfit.com/', 'century mattress': 'https://www.centuaryindia.com/',
+  sleepwell: 'https://www.mysleepwell.com/', kurlon: 'https://www.kurlon.com/',
 };
 if (!db.prepare(`SELECT v FROM kv WHERE k = 'websites_seeded'`).get()) {
   const set = db.prepare(`UPDATE companies SET website = ? WHERE name_key = ? AND website = ''`);
   for (const [key, site] of Object.entries(DEFAULT_WEBSITES)) set.run(site, key);
   db.prepare(`INSERT INTO kv (k, v) VALUES ('websites_seeded', '1')`).run();
+}
+
+// corrections found on the first real run: two wrong addresses, and an embed script mistaken for a channel
+if (!db.prepare(`SELECT v FROM kv WHERE k = 'websites_fix_1'`).get()) {
+  const fix = db.prepare(`UPDATE companies SET website = ?, lookup_state = '', lookup_note = '' WHERE website = ?`);
+  fix.run('https://www.centuaryindia.com/', 'https://www.centuryindia.com/');
+  fix.run('https://www.mysleepwell.com/', 'https://mysleepwell.com/');
+  db.prepare(`DELETE FROM handles WHERE source = 'auto' AND handle IN ('@iframe_api', '@player_api')`).run();
+  db.prepare(`INSERT INTO kv (k, v) VALUES ('websites_fix_1', '1')`).run();
 }
 
 export interface Company { id: number; name: string; created_at: number }
@@ -384,8 +393,10 @@ export function setHandle(companyId: number, platform: Platform, handle: string 
 }
 
 /** Queues collection for every saved handle (of one company, or all). Handles already running are left alone. */
-export function queueProfiles(companyId: number | null) {
-  return Number(db.prepare(`UPDATE handles SET status = 'queued', queued_at = ?, error = NULL, error_kind = NULL WHERE status != 'running' AND (? IS NULL OR company_id = ?)`)
+export function queueProfiles(companyId: number | null, onlyMissing = false) {
+  // onlyMissing: accounts that were never collected or whose last attempt failed; collected ones are left as they are
+  const missing = onlyMissing ? `AND (fetched_at IS NULL OR status = 'failed')` : '';
+  return Number(db.prepare(`UPDATE handles SET status = 'queued', queued_at = ?, error = NULL, error_kind = NULL WHERE status NOT IN ('running', 'queued') ${missing} AND (? IS NULL OR company_id = ?)`)
     .run(Date.now(), companyId, companyId).changes);
 }
 

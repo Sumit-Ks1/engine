@@ -8,7 +8,7 @@ import { useSummary } from './useSummary';
 
 const STATUS: Record<string, string> = { idle: 'Not collected', queued: 'Waiting', running: 'Collecting…', done: 'Collected', failed: 'Failed' };
 
-function HandleRow({ company, onSaved }: { company: CompanyInfo; onSaved: () => void }) {
+function HandleRow({ company, onSaved, onCollect, locked }: { company: CompanyInfo; onSaved: () => void; onCollect: (id: number) => void; locked: boolean }) {
   const initial = { website: company.website ?? '', ...Object.fromEntries(PROFILE_PLATFORMS.map((p) => [p.id, company.handles[p.id]?.handle ?? ''])) } as Record<ProfilePlatform | 'website', string>;
   const [v, setV] = useState(initial);
   const [msg, setMsg] = useState('');
@@ -39,7 +39,11 @@ function HandleRow({ company, onSaved }: { company: CompanyInfo; onSaved: () => 
           </td>
         );
       })}
-      <td><button className="btn small" disabled={!dirty} onClick={save}>Save</button>{msg && <div className="note bad">{msg}</div>}</td>
+      <td style={{ whiteSpace: 'nowrap' }}>
+        <button className="btn small" disabled={!dirty} onClick={save}>Save</button>{' '}
+        <button className="btn small" disabled={dirty || locked || (!company.website && !Object.keys(company.handles).length)} title="Collect only this company" onClick={() => onCollect(company.id)}>Collect</button>
+        {msg && <div className="note bad">{msg}</div>}
+      </td>
     </tr>
   );
 }
@@ -64,9 +68,14 @@ export default function Insights() {
   const link = (c: CompanyInfo) => <Link href={`/insights/c/${c.id}`}>{c.name}</Link>;
   const lastRun = Math.max(0, ...companies.flatMap((c) => Object.values(c.handles).map((h) => h!.fetchedAt ?? 0)));
 
-  async function run(path: 'run' | 'stop') {
+  // companies with nothing collected, and whether anything at all is still missing
+  const empty = companies.filter((c) => (c.website || Object.keys(c.handles).length) && !(data?.rows ?? []).some((r) => r.companyId === c.id));
+  const pending = companies.some((c) => (c.website && Object.keys(c.handles).length < PROFILE_PLATFORMS.length) || Object.values(c.handles).some((h) => !h!.fetchedAt || h!.status === 'failed'));
+
+  async function run(path: 'run' | 'stop', body: { all?: boolean; companyId?: number } = {}) {
+    if (body.all && !body.companyId && !confirm('Read every account again from scratch? This takes as long as the first run. Use "Collect what is missing" to fill gaps only.')) return;
     setBusy(true);
-    await fetch(`/api/insights/${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    await fetch(`/api/insights/${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     await load();
     setBusy(false);
   }
@@ -79,18 +88,24 @@ export default function Insights() {
         <div className="spacer" />
         <span className="muted">{lookups ? `Finding official accounts… ${lookups} ${lookups === 1 ? 'website' : 'websites'} left` : working ? `Collecting… ${total - working} of ${total} accounts done` : lastRun ? `Last collected ${new Date(lastRun).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}` : ''}</span>
         {working > 0 && <button className="btn small" disabled={busy} onClick={() => run('stop')}>Stop waiting ones</button>}
-        <button className="btn primary" disabled={busy || !canRun || working > 0} onClick={() => run('run')}>{working ? 'Collecting…' : 'Collect now'}</button>
+        {lastRun > 0 && <button className="btn small" disabled={busy || working > 0} onClick={() => run('run', { all: true })}>Re-collect everything</button>}
+        <button className="btn primary" disabled={busy || !canRun || working > 0 || (lastRun > 0 && !pending)} title={lastRun > 0 && !pending ? 'Every account has been collected' : undefined} onClick={() => run('run')}>{working ? 'Collecting…' : lastRun ? 'Collect what is missing' : 'Collect now'}</button>
       </header>
       {error && <p className="note bad">{error}</p>}
       {data?.demo && <div className="banner">Sample-data mode is on. Everything shown is generated placeholder data, not real accounts.</div>}
 
-      <details className="panel">
+      {!working && lastRun > 0 && empty.length > 0 && (
+        <div className="banner">
+          <b>No data yet for {empty.map((c) => c.name).join(', ')}.</b> Open Official accounts below to see why (usually the website address is wrong or the site does not link its accounts). Correct the website or type the accounts, Save, then press Collect on that row.
+        </div>
+      )}
+      <details className="panel" open={!working && lastRun > 0 && empty.length > 0 ? true : undefined}>
         <summary>Official accounts ({total} found)</summary>
-        <p className="hint" style={{ marginTop: 0 }}>You do not need to fill anything in. When you press Collect now, the engine opens each brand's website, reads its official Instagram, YouTube and X links from the page, and then reads the last 12 months of each account. Check the accounts it found here; type over one to correct it, or add one the website does not link.</p>
+        <p className="hint" style={{ marginTop: 0 }}>You do not need to fill anything in. When you press Collect now, the engine opens each brand's website, reads its official Instagram, YouTube and X links from the page, and then reads the last 12 months of each account. Check the accounts it found here; type over one to correct it, or add one the website does not link. Collect on a row reads just that company; the button at the top fills in only what is missing.</p>
         <div className="scroll">
           <table className="handles">
             <thead><tr><th>Company</th><th>Website</th>{PROFILE_PLATFORMS.map((p) => <th key={p.id}>{p.label}</th>)}<th /></tr></thead>
-            <tbody>{companies.map((c) => <HandleRow key={`${c.id}:${c.website}:${PROFILE_PLATFORMS.map((p) => c.handles[p.id]?.handle ?? '').join('|')}`} company={c} onSaved={load} />)}</tbody>
+            <tbody>{companies.map((c) => <HandleRow key={`${c.id}:${c.website}:${PROFILE_PLATFORMS.map((p) => c.handles[p.id]?.handle ?? '').join('|')}`} company={c} onSaved={load} locked={busy || working > 0} onCollect={(companyId) => run('run', { companyId, all: true })} />)}</tbody>
           </table>
         </div>
       </details>

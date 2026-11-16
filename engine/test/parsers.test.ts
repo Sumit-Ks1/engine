@@ -181,3 +181,11 @@ test('official handles are read from a brand website, ignoring share buttons', a
   assert.deepEqual(extractHandles('<a href="https://www.youtube.com/c/BrandTV">y</a>'), { youtube: 'c/BrandTV' });
   assert.deepEqual(extractHandles('<p>no links here</p>'), {});
 });
+
+test('embed scripts are not mistaken for accounts; www twin is derived', async () => {
+  const { extractHandles, alternateHost } = await import('../src/scrapers/profiles.js');
+  assert.deepEqual(extractHandles('<script src="https://www.youtube.com/iframe_api"></script><script src="https://www.instagram.com/embed.js"></script><script src="https://platform.twitter.com/widgets.js"></script>'), {});
+  assert.deepEqual(extractHandles('<script src="https://www.youtube.com/iframe_api"></script><a href="https://www.youtube.com/@PepsIndia">yt</a>'), { youtube: '@PepsIndia' });
+  assert.equal(alternateHost('https://mysleepwell.com/'), 'https://www.mysleepwell.com/');
+  assert.equal(alternateHost('https://www.kurlon.com/'), 'https://kurlon.com/');
+});

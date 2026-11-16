@@ -170,9 +170,11 @@ app.put('/companies/:id/handles', async (req, reply) => {
 
 app.post('/insights/run', async (req) => {
   const companyId = idOf((req.body as any)?.companyId);
+  // by default only what is missing or failed is collected; `all` re-reads accounts that already have data
+  const all = (req.body as any)?.all === true;
   // companies still missing a handle get their website read first; what is found is queued automatically
   const lookups = store.queueLookups(companyId, PROFILE_PLATFORMS.length);
-  const queued = store.queueProfiles(companyId);
+  const queued = store.queueProfiles(companyId, !all);
   queue.kick();
   return { queued, lookups };
 });

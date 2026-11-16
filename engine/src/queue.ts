@@ -83,7 +83,7 @@ async function runLookup(c: { id: number; name: string; website: string }) {
   try {
     const found = config.demoMode
       ? Object.fromEntries(PROFILE_PLATFORMS.map((p) => [p, p === 'youtube' ? `@sample${c.id}` : `sample${c.id}`]))
-      : await discoverHandles(c.website, { cancelled: () => !getCompany(c.id) });
+      : (await discoverHandles(c.website, { cancelled: () => !getCompany(c.id) })).handles;
     const added: string[] = [];
     const missing: string[] = [];
     for (const p of PROFILE_PLATFORMS) {
@@ -91,7 +91,7 @@ async function runLookup(c: { id: number; name: string; website: string }) {
       const handle = (found as Partial<Record<ProfilePlatform, string>>)[p];
       if (handle) { setHandle(c.id, p, handle, 'auto'); added.push(`${LABELS[p]} ${handle}`); } else missing.push(LABELS[p]);
     }
-    if (added.length) queueProfiles(c.id);
+    if (added.length) queueProfiles(c.id, true);
     finishLookup(c.id, 'done', [added.length ? `Found on the website: ${added.join(', ')}.` : '', missing.length ? `No ${missing.join(' or ')} link on the website.` : ''].filter(Boolean).join(' '));
     log(`${label} found: ${added.join(', ') || 'nothing new'}${missing.length ? ` | not linked: ${missing.join(', ')}` : ''}`);
   } catch (e) {

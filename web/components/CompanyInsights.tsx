@@ -29,7 +29,7 @@ export default function CompanyInsights({ id }: { id: number }) {
 
   async function run() {
     setBusy(true);
-    await fetch('/api/insights/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ companyId: id }) });
+    await fetch('/api/insights/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ companyId: id, all: true }) });
     await load();
     setBusy(false);
   }

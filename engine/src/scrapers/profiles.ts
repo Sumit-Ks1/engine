@@ -38,10 +38,10 @@ export function normalizeHandle(platform: ProfilePlatform, raw: unknown): string
 }
 
 const SKIP: Record<ProfilePlatform, RegExp> = {
-  // links that are posts, share buttons or site sections rather than an account
-  instagram: /^(p|reel|reels|tv|explore|accounts|share|sharer|stories|direct|about|developer|legal)$/i,
-  youtube: /^(watch|embed|playlist|results|shorts|share|feed|hashtag|live|t|about|premium|gaming|music|redirect)$/i,
-  twitter: /^(intent|share|home|hashtag|search|i|login|signup|explore|privacy|tos|settings)$/i,
+  // links that are posts, share buttons, embed scripts or site sections rather than an account
+  instagram: /^(p|reel|reels|tv|explore|accounts|share|sharer|stories|direct|about|developer|legal|embed|embed\.js|static|oauth)$/i,
+  youtube: /^(watch|embed|playlist|results|shorts|share|feed|hashtag|live|t|about|premium|gaming|music|redirect|iframe_api|player_api|s|yts|api|v|e|oembed|subscription_center|supported_browsers|howyoutubeworks|creators|ads|intl|account|kids|tv|signin|generate_204)$/i,
+  twitter: /^(intent|share|home|hashtag|search|i|login|signup|explore|privacy|tos|settings|widgets\.js|oauth|statuses)$/i,
 };
 
 /**
@@ -71,12 +71,14 @@ export function extractHandles(html: string): Partial<Record<ProfilePlatform, st
   return out;
 }
 
-/** Opens a brand's website in the browser and reads its official account links. */
-export async function discoverHandles(website: string, ctx: { cancelled: () => boolean }): Promise<Partial<Record<ProfilePlatform, string>>> {
+/** Pages of a brand site that usually carry its "follow us" links when the home page does not. */
+const FALLBACK_PAGES = ['/pages/contact-us', '/contact-us', '/pages/about-us', '/about-us'];
+
+async function readLinks(url: string, cancelled: () => boolean): Promise<Partial<Record<ProfilePlatform, string>>> {
   let found: Partial<Record<ProfilePlatform, string>> = {};
   await capture({
-    cancelled: ctx.cancelled,
-    url: website,
+    cancelled,
+    url,
     match: () => false,
     enough: () => false,
     maxScrolls: 3,
@@ -88,6 +90,39 @@ export async function discoverHandles(website: string, ctx: { cancelled: () => b
     },
   });
   return found;
+}
+
+/** The same address with or without "www.", for sites that only answer on one of them. */
+export function alternateHost(website: string): string | null {
+  try {
+    const u = new URL(website);
+    u.hostname = u.hostname.startsWith('www.') ? u.hostname.slice(4) : `www.${u.hostname}`;
+    return u.toString();
+  } catch { return null; }
+}
+
+/**
+ * Opens a brand's website in the browser and reads its official account links. If the address
+ * does not load, the www / non-www twin is tried; if the home page lacks a platform, a few
+ * contact / about pages are checked as well.
+ */
+export async function discoverHandles(website: string, ctx: { cancelled: () => boolean }): Promise<{ handles: Partial<Record<ProfilePlatform, string>>; site: string }> {
+  let site = website;
+  let handles: Partial<Record<ProfilePlatform, string>>;
+  try {
+    handles = await readLinks(site, ctx.cancelled);
+  } catch (e) {
+    const alt = e instanceof ScrapeError && e.kind === 'network' ? alternateHost(website) : null;
+    if (!alt) throw e;
+    site = alt;
+    handles = await readLinks(site, ctx.cancelled);
+  }
+  for (const path of FALLBACK_PAGES) {
+    if (PROFILE_PLATFORMS.every((p) => handles[p]) || ctx.cancelled()) break;
+    const more = await readLinks(new URL(path, site).toString(), ctx.cancelled).catch(() => ({} as Partial<Record<ProfilePlatform, string>>));
+    handles = { ...more, ...handles };
+  }
+  return { handles, site };
 }
 
 export const profileUrl = (platform: ProfilePlatform, handle: string) =>
